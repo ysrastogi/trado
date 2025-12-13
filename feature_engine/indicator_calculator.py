@@ -32,7 +32,7 @@ class IndicatorCalculator:
         Returns:
             Dictionary of indicator names to value lists (aligned to input candles)
         """
-        if not candles or len(candles) < 50:
+        if not candles or len(candles) < 2:
             logger.warning(f"Not enough candles for indicator calculation: {len(candles)}")
             return {}
         
@@ -96,7 +96,7 @@ class IndicatorCalculator:
         # Map common intervals to pandas offset aliases
         rule = interval
         if interval.endswith('m'):
-            rule = interval.replace('m', 'T')
+            rule = interval.replace('m', 'min')
         elif interval.endswith('h'):
             pass  # Pandas 2.2+ prefers lowercase 'h'
         elif interval.endswith('d'):
@@ -147,37 +147,3 @@ class IndicatorCalculator:
         
         return all_indicators_df
     
-    def _calculate_basic_indicators(self, df: pd.DataFrame) -> Dict[str, list]:
-        """Calculate basic indicators without external libraries (fallback)"""
-        indicators = {}
-        
-        try:
-            closes = df['close'].values
-            
-            # SMA
-            for period in [20, 50, 200]:
-                if len(closes) >= period:
-                    sma = pd.Series(closes).rolling(window=period).mean().values
-                    indicators[f'sma_{period}'] = sma.tolist()
-            
-            # EMA
-            for period in [12, 26]:
-                if len(closes) >= period:
-                    ema = pd.Series(closes).ewm(span=period, adjust=False).mean().values
-                    indicators[f'ema_{period}'] = ema.tolist()
-            
-            # RSI
-            if len(closes) >= 15:
-                delta = pd.Series(closes).diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                rsi = (100 - (100 / (1 + rs))).values
-                indicators['rsi_14'] = rsi.tolist()
-            
-            logger.info(f"Calculated {len(indicators)} basic indicators")
-            
-        except Exception as e:
-            logger.error(f"Error in basic calculation: {e}", exc_info=True)
-        
-        return indicators
