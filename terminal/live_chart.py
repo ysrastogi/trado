@@ -6,10 +6,21 @@ Displays real-time candlestick charts with automatic updates
 import time
 import sys
 import os
-from typing import Optional, Callable, List
+import select
+import tty
+import termios
+import yaml
+from typing import Optional, Any
 from datetime import datetime
 import threading
 import logging
+
+from terminal.plotter import TerminalPlotter
+from feature_engine.indicator_calculator import IndicatorCalculator
+from feature_engine.models import FeatureConfig
+from terminal.chart_consumer import ChartDataConsumer
+from common.models import CandleData
+from data_layer.market_stream.stream import MarketStream
 
 logger = logging.getLogger(__name__)
 
@@ -31,33 +42,32 @@ class Colors:
 
 class LiveChart:
     """
-    Live auto-refreshing candlestick chart
-    
-    Features:
-    - Real-time updates from cache
-    - Configurable refresh rate
-    - Clean terminal clearing
-    - Graceful exit (Ctrl+C)
-    - Statistics tracking
+    Live auto-refreshing candlestick chart with indicators
     """
     
-    def __init__(self, symbol: str, interval: int = 60, refresh_rate: float = 1.0):
+    def __init__(self, symbol: str, interval: int = 60, refresh_rate: float = 1.0, market_stream: Optional[Any] = None, window_size: int = 60):
         """
         Initialize live chart
         
         Args:
             symbol: Trading symbol (e.g., 'BTCUSD')
-            interval: Time interval in seconds (60=1m, 120=2m, 300=5m, 900=15m, 3600=1h)
-            refresh_rate: Refresh rate in seconds (default: 1.0)
+            interval: Time interval in seconds
+            refresh_rate: Refresh rate in seconds
+            market_stream: Ignored (kept for compatibility)
+            window_size: Number of candles to display
         """
-        self.symbol = symbol.upper()
+        self.symbol = symbol
         self.interval = interval
         self.refresh_rate = refresh_rate
+        self.window_size = window_size
         self.is_running = False
         self.update_count = 0
         self.start_time = None
         self.last_update_time = None
-        self.last_price = None
+        
+        # Indicator Navigation State
+        self.active_indicator_index = 0
+        self.secondary_indicators = []
         
         # Interval display mapping
         self.interval_map = {
@@ -68,291 +78,173 @@ class LiveChart:
             3600: '1h'
         }
         self.interval_str = self.interval_map.get(interval, f"{interval}s")
-    
-    def start(self):
-        """
-        Start the live chart display
         
-        This will:
-        1. Clear the terminal
-        2. Fetch and display chart
-        3. Update at specified refresh rate
-        4. Continue until user presses Ctrl+C
-        """
+        # Initialize components
+        self.plotter = TerminalPlotter()
+        
+        # Load feature config
+        try:
+            with open("config/feature_config.yaml", "r") as f:
+                config_dict = yaml.safe_load(f)
+                feature_config = FeatureConfig.from_dict(config_dict)
+                self.calculator = IndicatorCalculator(config=feature_config)
+        except Exception as e:
+            logger.warning(f"Failed to load feature config, using defaults: {e}")
+            self.calculator = IndicatorCalculator()
+        
+        # Suppress logs from feature_engine to prevent terminal clutter
+        logging.getLogger('feature_engine.indicator_calculator').setLevel(logging.WARNING)
+        
+        # Redis Consumer
+        self.consumer = ChartDataConsumer(self.symbol, self.interval, self.window_size)
+        
+    def start(self):
+        """Start the live chart display"""
         self.is_running = True
         self.start_time = datetime.now()
         
         print(f"{Colors.CLEAR_SCREEN}{Colors.MOVE_CURSOR_HOME}")
         print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}")
-        print(f"{Colors.AQUA}{Colors.BOLD}📊 LIVE CHART MODE{Colors.RESET}")
+        print(f"{Colors.AQUA}{Colors.BOLD}📊 LIVE CHART MODE (Redis Stream){Colors.RESET}")
         print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}")
         print(f"{Colors.WHITE}Symbol: {Colors.MAGENTA}{self.symbol}{Colors.RESET}")
         print(f"{Colors.WHITE}Interval: {Colors.AQUA}{self.interval_str}{Colors.RESET}")
-        print(f"{Colors.WHITE}Refresh Rate: {Colors.AQUA}{self.refresh_rate}s{Colors.RESET}")
-        print(f"{Colors.GRAY}Press Ctrl+C to exit...{Colors.RESET}")
-        print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}\n")
+        print(f"{Colors.GRAY}Connecting to Redis stream...{Colors.RESET}")
         
-        time.sleep(2)  # Brief pause to show info
-        
+        # Start Consumer
         try:
+            self.consumer.start()
+        except Exception as e:
+            print(f"{Colors.RED}Failed to connect to Redis: {e}{Colors.RESET}")
+            return
+        
+        print(f"{Colors.GRAY}Press Ctrl+C to exit...{Colors.RESET}")
+        
+        # Save terminal settings
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            # Set to cbreak mode (read char by char, no echo)
+            tty.setcbreak(sys.stdin.fileno())
+            
             while self.is_running:
                 self._update_display()
-                time.sleep(self.refresh_rate)
+                
+                # Responsive sleep loop
+                end_time = time.time() + self.refresh_rate
+                while time.time() < end_time and self.is_running:
+                    if self._is_key_pressed():
+                        key = sys.stdin.read(1)
+                        if key:
+                            if key.lower() == 'n': # Next
+                                self.active_indicator_index += 1
+                                break # Trigger immediate update
+                            elif key.lower() == 'p': # Previous
+                                self.active_indicator_index -= 1
+                                break # Trigger immediate update
+                            elif key.lower() == 'q': # Quit
+                                self.stop()
+                                return
+                    
+                    time.sleep(0.05) # Short sleep for responsiveness
                 
         except KeyboardInterrupt:
             self._handle_exit()
+        except Exception as e:
+            logger.error(f"Live chart error: {e}", exc_info=True)
+            self._handle_exit()
+        finally:
+            # Restore settings
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
     
     def stop(self):
         """Stop the live chart"""
         self.is_running = False
-    
+        self.consumer.stop()
+
+    def _is_key_pressed(self):
+        return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
+            
     def _update_display(self):
         """Update the chart display"""
         try:
-            # Clear screen and move cursor to home
+            # Get candles from consumer
+            current_candles = self.consumer.get_candles()
+            
+            if not current_candles:
+                print(f"{Colors.YELLOW}Waiting for data...{Colors.RESET}")
+                return
+
+            # Calculate indicators
+            indicators = self.calculator.calculate_indicators(current_candles)
+            
+            # Filter Secondary Indicators
+            all_keys = sorted(indicators.keys())
+            self.secondary_indicators = [k for k in all_keys if not self.plotter.is_overlay(k)]
+            
+            active_secondary = None
+            if self.secondary_indicators:
+                # Wrap index
+                self.active_indicator_index = self.active_indicator_index % len(self.secondary_indicators)
+                active_secondary = self.secondary_indicators[self.active_indicator_index]
+            
+            # Render chart
+            chart_output = self.plotter.render(
+                self.symbol, 
+                current_candles[-self.window_size:], # Show last n candles
+                {k: v[-self.window_size:] for k, v in indicators.items()},
+                self.interval_str,
+                active_secondary_indicator=active_secondary
+            )
+            
+            # Clear screen and display
             print(f"{Colors.CLEAR_SCREEN}{Colors.MOVE_CURSOR_HOME}", end='')
-            
-            # Get current chart
-            from terminal.chart import create_chart
-            chart_output = create_chart(self.symbol, self.interval)
-            
-            # Display chart
             print(chart_output)
             
-            # Display live statistics
-            self._display_stats()
+            # Display stats
+            self._display_stats(current_candles[-1])
             
-            # Update counters
             self.update_count += 1
             self.last_update_time = datetime.now()
             
         except Exception as e:
             logger.error(f"Error updating live chart: {e}", exc_info=True)
-            print(f"{Colors.RED}❌ Error updating chart: {str(e)}{Colors.RESET}")
+            # Don't crash, just print error
+            print(f"{Colors.RED}Error: {str(e)}{Colors.RESET}")
     
-    def _display_stats(self):
-        """Display live chart statistics"""
-        if not self.start_time:
-            return
-        
-        uptime = datetime.now() - self.start_time
-        uptime_str = str(uptime).split('.')[0]  # Remove microseconds
-        
-        last_update = "Never"
-        if self.last_update_time:
-            last_update = self.last_update_time.strftime("%H:%M:%S")
-        
-        print(f"\n{Colors.AQUA}{'─' * 80}{Colors.RESET}")
-        print(f"{Colors.BOLD}📊 Live Chart Statistics{Colors.RESET}")
-        print(f"{Colors.AQUA}{'─' * 80}{Colors.RESET}")
-        print(f"{Colors.WHITE}Updates: {Colors.AQUA}{self.update_count}{Colors.RESET} | "
-              f"{Colors.WHITE}Uptime: {Colors.AQUA}{uptime_str}{Colors.RESET} | "
-              f"{Colors.WHITE}Last Update: {Colors.AQUA}{last_update}{Colors.RESET}")
-        print(f"{Colors.GRAY}Refreshing every {self.refresh_rate}s... Press Ctrl+C to exit{Colors.RESET}")
-        print(f"{Colors.AQUA}{'─' * 80}{Colors.RESET}")
-    
-    def _handle_exit(self):
-        """Handle graceful exit"""
-        print(f"\n\n{Colors.AQUA}{'═' * 80}{Colors.RESET}")
-        print(f"{Colors.YELLOW}👋 Exiting Live Chart Mode{Colors.RESET}")
-        print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}")
-        
-        if self.start_time:
-            uptime = datetime.now() - self.start_time
-            uptime_str = str(uptime).split('.')[0]
-            
-            print(f"{Colors.WHITE}Session Statistics:{Colors.RESET}")
-            print(f"  • Total Updates: {Colors.AQUA}{self.update_count}{Colors.RESET}")
-            print(f"  • Session Duration: {Colors.AQUA}{uptime_str}{Colors.RESET}")
-            print(f"  • Symbol: {Colors.MAGENTA}{self.symbol}{Colors.RESET}")
-            print(f"  • Interval: {Colors.AQUA}{self.interval_str}{Colors.RESET}")
-        
-        print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}\n")
-
-
-class LiveMultiChart:
-    """
-    Live auto-refreshing multi-symbol comparison chart
-    
-    Similar to LiveChart but displays multiple symbols in a comparison view
-    """
-    
-    def __init__(self, symbols: List[str], interval: int = 60, refresh_rate: float = 2.0):
-        """
-        Initialize live multi-symbol chart
-        
-        Args:
-            symbols: List of trading symbols
-            interval: Time interval in seconds
-            refresh_rate: Refresh rate in seconds (default: 2.0 for multi-symbol)
-        """
-        self.symbols = [s.upper() for s in symbols]
-        self.interval = interval
-        self.refresh_rate = refresh_rate
-        self.is_running = False
-        self.update_count = 0
-        self.start_time = None
-        self.last_update_time = None
-        
-        # Interval display mapping
-        self.interval_map = {
-            60: '1m',
-            120: '2m',
-            300: '5m',
-            900: '15m',
-            3600: '1h'
-        }
-        self.interval_str = self.interval_map.get(interval, f"{interval}s")
-    
-    def start(self):
-        """Start the live multi-symbol chart display"""
-        self.is_running = True
-        self.start_time = datetime.now()
-        
-        print(f"{Colors.CLEAR_SCREEN}{Colors.MOVE_CURSOR_HOME}")
-        print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}")
-        print(f"{Colors.AQUA}{Colors.BOLD}📊 LIVE MULTI-SYMBOL CHART MODE{Colors.RESET}")
-        print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}")
-        print(f"{Colors.WHITE}Symbols: {Colors.MAGENTA}{', '.join(self.symbols)}{Colors.RESET}")
-        print(f"{Colors.WHITE}Interval: {Colors.AQUA}{self.interval_str}{Colors.RESET}")
-        print(f"{Colors.WHITE}Refresh Rate: {Colors.AQUA}{self.refresh_rate}s{Colors.RESET}")
-        print(f"{Colors.GRAY}Press Ctrl+C to exit...{Colors.RESET}")
-        print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}\n")
-        
-        time.sleep(2)
-        
-        try:
-            while self.is_running:
-                self._update_display()
-                time.sleep(self.refresh_rate)
-                
-        except KeyboardInterrupt:
-            self._handle_exit()
-    
-    def stop(self):
-        """Stop the live chart"""
-        self.is_running = False
-    
-    def _update_display(self):
-        """Update the multi-symbol chart display"""
-        try:
-            # Clear screen
-            print(f"{Colors.CLEAR_SCREEN}{Colors.MOVE_CURSOR_HOME}", end='')
-            
-            # Get charts for each symbol
-            from terminal.chart import create_chart, create_multi_symbol_chart
-            
-            # Use multi-symbol chart for comparison
-            chart_output = create_multi_symbol_chart(self.symbols, self.interval)
-            
-            # Display chart
-            print(chart_output)
-            
-            # Display individual charts (optional, can be toggled)
-            # for symbol in self.symbols:
-            #     chart = create_chart(symbol, self.interval)
-            #     print(chart)
-            #     print()
-            
-            # Display stats
-            self._display_stats()
-            
-            # Update counters
-            self.update_count += 1
-            self.last_update_time = datetime.now()
-            
-        except Exception as e:
-            logger.error(f"Error updating live multi-chart: {e}", exc_info=True)
-            print(f"{Colors.RED}❌ Error updating chart: {str(e)}{Colors.RESET}")
-    
-    def _display_stats(self):
+    def _display_stats(self, last_candle: CandleData):
         """Display live chart statistics"""
         if not self.start_time:
             return
         
         uptime = datetime.now() - self.start_time
         uptime_str = str(uptime).split('.')[0]
-        
-        last_update = "Never"
-        if self.last_update_time:
-            last_update = self.last_update_time.strftime("%H:%M:%S")
+        last_update = datetime.now().strftime("%H:%M:%S")
         
         print(f"\n{Colors.AQUA}{'─' * 80}{Colors.RESET}")
-        print(f"{Colors.BOLD}📊 Live Multi-Chart Statistics{Colors.RESET}")
+        print(f"{Colors.BOLD} Price: {Colors.GREEN}{last_candle.close:.2f}{Colors.RESET} | "
+              f"Vol: {Colors.YELLOW}{last_candle.volume}{Colors.RESET}")
+        print(f"{Colors.GRAY} Last Update: {last_update} | Uptime: {uptime_str}{Colors.RESET}")
+        print(f"{Colors.WHITE} Controls: [N]ext Indicator | [P]rev Indicator | [Q]uit{Colors.RESET}")
         print(f"{Colors.AQUA}{'─' * 80}{Colors.RESET}")
-        print(f"{Colors.WHITE}Updates: {Colors.AQUA}{self.update_count}{Colors.RESET} | "
-              f"{Colors.WHITE}Uptime: {Colors.AQUA}{uptime_str}{Colors.RESET} | "
-              f"{Colors.WHITE}Last Update: {Colors.AQUA}{last_update}{Colors.RESET}")
-        print(f"{Colors.GRAY}Refreshing every {self.refresh_rate}s... Press Ctrl+C to exit{Colors.RESET}")
-        print(f"{Colors.AQUA}{'─' * 80}{Colors.RESET}")
-    
+
     def _handle_exit(self):
         """Handle graceful exit"""
-        print(f"\n\n{Colors.AQUA}{'═' * 80}{Colors.RESET}")
-        print(f"{Colors.YELLOW}👋 Exiting Live Multi-Chart Mode{Colors.RESET}")
-        print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}")
-        
-        if self.start_time:
-            uptime = datetime.now() - self.start_time
-            uptime_str = str(uptime).split('.')[0]
-            
-            print(f"{Colors.WHITE}Session Statistics:{Colors.RESET}")
-            print(f"  • Total Updates: {Colors.AQUA}{self.update_count}{Colors.RESET}")
-            print(f"  • Session Duration: {Colors.AQUA}{uptime_str}{Colors.RESET}")
-            print(f"  • Symbols: {Colors.MAGENTA}{', '.join(self.symbols)}{Colors.RESET}")
-            print(f"  • Interval: {Colors.AQUA}{self.interval_str}{Colors.RESET}")
-        
-        print(f"{Colors.AQUA}{'═' * 80}{Colors.RESET}\n")
+        print(f"\n{Colors.YELLOW}Exiting Live Chart...{Colors.RESET}\n")
 
-
-def start_live_chart(symbol: str, interval: int = 60, refresh_rate: float = 1.0):
+def start_live_chart(symbol: str, interval: int = 60, refresh_rate: float = 1.0, market_stream: Optional[MarketStream] = None, window_size: int = 60):
     """
     Convenience function to start a live chart
-    
-    Args:
-        symbol: Trading symbol
-        interval: Time interval in seconds
-        refresh_rate: Refresh rate in seconds
     """
-    chart = LiveChart(symbol, interval, refresh_rate)
+    chart = LiveChart(symbol, interval, refresh_rate, market_stream, window_size)
     chart.start()
-
-
-def start_live_multi_chart(symbols: List[str], interval: int = 60, refresh_rate: float = 2.0):
-    """
-    Convenience function to start a live multi-symbol chart
-    
-    Args:
-        symbols: List of trading symbols
-        interval: Time interval in seconds
-        refresh_rate: Refresh rate in seconds
-    """
-    chart = LiveMultiChart(symbols, interval, refresh_rate)
-    chart.start()
-
 
 if __name__ == "__main__":
-    """CLI interface for testing live charts"""
     import sys
-    
     if len(sys.argv) < 2:
-        print("Usage:")
-        print("  Single symbol:  python live_chart.py <SYMBOL> [interval_seconds] [refresh_rate]")
-        print("  Multi-symbol:   python live_chart.py <SYM1,SYM2,SYM3> [interval_seconds] [refresh_rate]")
-        print()
-        print("Examples:")
-        print("  python live_chart.py BTCUSD")
-        print("  python live_chart.py BTCUSD 300 2.0")
-        print("  python live_chart.py BTCUSD,ETHUSD,SOLUSD 60 1.5")
+        print("Usage: python live_chart.py <SYMBOL> [interval_seconds] [window_size]")
         sys.exit(1)
     
-    symbols_input = sys.argv[1]
+    symbol = sys.argv[1]
     interval = int(sys.argv[2]) if len(sys.argv) > 2 else 60
-    refresh_rate = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
-    
-    # Check if multi-symbol
-    if ',' in symbols_input:
-        symbols = [s.strip() for s in symbols_input.split(',')]
-        start_live_multi_chart(symbols, interval, refresh_rate)
-    else:
-        start_live_chart(symbols_input, interval, refresh_rate)
+    window_size = int(sys.argv[3]) if len(sys.argv) > 3 else 60
+    start_live_chart(symbol, interval, window_size=window_size)
