@@ -31,6 +31,7 @@ class CommandType(Enum):
     SELL = "sell"
     STRATEGY = "strategy"
     RISK = "risk"
+    LIVE_CHART = "live_chart"
     UNKNOWN = "unknown"
 
 
@@ -46,6 +47,7 @@ class CommandParser:
             '/status': CommandType.STATUS,
             '/s': CommandType.STATUS,
             '/chart': CommandType.CHART,
+            '/live': CommandType.LIVE_CHART,
             '/buy': CommandType.BUY,
             '/sell': CommandType.SELL,
             '/strategy': CommandType.STRATEGY,
