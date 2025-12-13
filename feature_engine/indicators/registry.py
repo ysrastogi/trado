@@ -7,7 +7,7 @@ from .base import BaseIndicator
 from .moving_averages import SMAIndicator, EMAIndicator, WMAIndicator, HMAIndicator, TEMAIndicator
 from .momentum import RSIIndicator, MACDIndicator, StochasticIndicator, WilliamsRIndicator, ROCIndicator, CCIIndicator
 from .volatility import ATRIndicator, ADXIndicator, BollingerBandsIndicator, SuperTrendIndicator
-from .volume import OBVIndicator
+from .volume import OBVIndicator, VWAPIndicator, VolumeSMAIndicator
 import logging
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,8 @@ class IndicatorRegistry:
 
         # Volume
         'obv': OBVIndicator,
+        'vwap': VWAPIndicator,
+        'vol_sma': VolumeSMAIndicator,
     }
 
     @classmethod
