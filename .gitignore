@@ -5,3 +5,4 @@ __pycache__/
 backtest_reports/
 logs/
 .DS_Store
+.github/
