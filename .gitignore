@@ -1,0 +1,6 @@
+*.pyc
+__pycache__/
+.env
+.vscode/
+backtest_reports/
+logs/
