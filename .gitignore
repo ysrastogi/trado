@@ -4,3 +4,4 @@ __pycache__/
 .vscode/
 backtest_reports/
 logs/
+.DS_Store
