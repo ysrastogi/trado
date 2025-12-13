@@ -3,7 +3,7 @@ Volume-based indicators
 """
 
 import pandas as pd
-from .base import OHLCVBasedIndicator
+from .base import OHLCVBasedIndicator, BaseIndicator
 
 
 class OBVIndicator(OHLCVBasedIndicator):
@@ -39,3 +39,45 @@ class OBVIndicator(OHLCVBasedIndicator):
     def validate_params(self) -> bool:
         # Length is optional for OBV
         return True
+
+
+class VWAPIndicator(OHLCVBasedIndicator):
+    """Volume Weighted Average Price"""
+
+    def __init__(self, params: dict = None):
+        super().__init__("vwap", params)
+
+    def _calculate_from_ohlcv(self, open_p, high, low, close, volume) -> pd.Series:
+        """Calculate VWAP from OHLCV"""
+        typical_price = (high + low + close) / 3
+        # Simple cumulative calculation
+        # Note: In a real intraday setting, this should reset daily.
+        # Assuming the input dataframe represents the relevant session or window.
+        vwap = (typical_price * volume).cumsum() / volume.cumsum()
+        return vwap
+
+    def get_output_columns(self) -> list:
+        return ["VWAP"]
+
+    def validate_params(self) -> bool:
+        return True
+
+
+class VolumeSMAIndicator(BaseIndicator):
+    """Simple Moving Average of Volume"""
+
+    def __init__(self, params: dict = None):
+        super().__init__("vol_sma", params)
+        self.length = self.params.get('length', 20)
+
+    def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Volume SMA"""
+        vol_sma = df['volume'].rolling(window=self.length).mean()
+        vol_sma.name = f"VOL_SMA_{self.length}"
+        return pd.DataFrame(vol_sma)
+
+    def get_output_columns(self) -> list:
+        return [f"VOL_SMA_{self.length}"]
+
+    def validate_params(self) -> bool:
+        return 'length' in self.params and self.params['length'] > 0
