@@ -1,0 +1,33 @@
+# Feature Engine Configuration
+
+# List of indicators to calculate
+# Supported indicators: sma, ema, rsi, macd, bbands, stoch, adx, atr, roc, cci, obv, supertrend
+indicators:
+  - name: sma
+    params:
+      length: 20
+  - name: sma
+    params:
+      length: 50
+  - name: rsi
+    params:
+      length: 14
+  - name: macd
+    params:
+      fast: 12
+      slow: 26
+      signal: 9
+  - name: bbands
+    params:
+      length: 20
+      std: 2.0
+  - name: atr
+    params:
+      length: 14
+
+# Timeframes to calculate (in addition to the base timeframe)
+# Examples: "1h", "4h", "1d"
+# Note: Base timeframe is determined by the input data
+timeframes:
+  - "1h"
+  - "4h"
