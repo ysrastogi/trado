@@ -11,6 +11,7 @@ from typing import Optional
 
 from terminal.command_parser import CommandParser, CommandType
 from terminal.formatter import ResponseFormatter, Colors
+from terminal.live_chart import start_live_chart
 from broker.trading_client import TradingClient
 from risk_manager.risk_manager import RiskManager
 
@@ -100,6 +101,9 @@ class TradoTerminal:
         elif command_type == CommandType.RISK:
             self._show_risk_status()
             
+        elif command_type == CommandType.LIVE_CHART:
+            self._handle_live_chart(metadata)
+            
         elif command_type == CommandType.UNKNOWN:
             print(self.formatter.format_alert("WARNING", f"Unknown command: {metadata.get('raw')}"))
 
@@ -117,10 +121,27 @@ class TradoTerminal:
             ["/buy <symbol> <amount>", "Place a buy order"],
             ["/sell <symbol> <amount>", "Place a sell order"],
             ["/risk", "Show risk management metrics"],
-            ["/chart", "Open live chart (Not implemented)"],
+            ["/live <symbol> [interval] [window_size]", "Open live chart with indicators"],
             ["/exit", "Exit the terminal"]
         ]
         print("\n" + self.formatter.format_table(help_text[0], help_text[1:]))
+
+    def _handle_live_chart(self, metadata: dict):
+        """Handle live chart command"""
+        args = metadata.get('args', [])
+        if not args:
+            print(self.formatter.format_alert("ERROR", "Usage: /live <symbol> [interval_seconds] [window_size]"))
+            return
+            
+        symbol = args[0]
+        interval = int(args[1]) if len(args) > 1 else 60
+        window_size = int(args[2]) if len(args) > 2 else 60
+        
+        try:
+            # Pass the existing market stream from the broker
+            start_live_chart(symbol, interval, market_stream=self.broker.market_stream, window_size=window_size)
+        except Exception as e:
+            print(self.formatter.format_alert("ERROR", f"Failed to start chart: {e}"))
 
     def _show_status(self):
         """Show system status"""
