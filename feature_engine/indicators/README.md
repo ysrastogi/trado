@@ -34,6 +34,8 @@ This package provides a modular, configurable system for calculating technical i
 
 ### Volume
 - `obv`: On Balance Volume
+- `vwap`: Volume Weighted Average Price
+- `vol_sma`: Volume Simple Moving Average
 
 ## Usage
 
