@@ -11,9 +11,16 @@ from typing import Optional
 
 from terminal.command_parser import CommandParser, CommandType
 from terminal.formatter import ResponseFormatter, Colors
-from terminal.live_chart import start_live_chart
-from broker.trading_client import TradingClient
+from terminal.live_chart import start_live_chart, LiveChart
+from broker.factory import ExecutionServiceFactory
+from broker.interfaces import OrderRequest, OrderSide, OrderType, OrderStatus
+from data_layer.market_stream.stream import MarketStream
 from risk_manager.risk_manager import RiskManager
+from data_layer.historical_data_provider import YFinanceDataProvider
+from backtester.engine import PlaybackEngine
+from terminal.playback_consumer import PlaybackChartConsumer
+from datetime import datetime, timedelta
+import yaml
 
 # Set up logging
 logging.basicConfig(
@@ -42,12 +49,23 @@ class TradoTerminal:
         # Initialize Core Components
         print(f"{Colors.GRAY}Initializing components...{Colors.RESET}")
         try:
-            self.broker = TradingClient(config_path="config/tradding_config.yaml")
-            self.risk_manager = self.broker.risk_manager
+            # Load Config
+            with open("config/tradding_config.yaml", 'r') as f:
+                self.config = yaml.safe_load(f)
+
+            # Initialize Market Stream
+            self.market_stream = MarketStream(config_path="config/tradding_config.yaml")
+            
+            # Initialize Execution Service
+            self.execution_service = ExecutionServiceFactory.create_service(self.config, self.market_stream)
+            
+            # Initialize Risk Manager
+            self.risk_manager = RiskManager(self.config)
+            
             print(self.formatter.format_alert("SUCCESS", "Components initialized successfully"))
         except Exception as e:
             print(self.formatter.format_alert("ERROR", f"Failed to initialize components: {e}"))
-            sys.exit(1)
+            # sys.exit(1) # Don't exit, let it fail gracefully or retry
     
     def start(self):
         """Start the terminal loop"""
@@ -98,6 +116,9 @@ class TradoTerminal:
         elif command_type == CommandType.SELL:
             self._handle_trade(metadata, is_buy=False)
             
+        elif command_type == CommandType.REPLAY:
+            self._handle_replay(metadata)
+            
         elif command_type == CommandType.RISK:
             self._show_risk_status()
             
@@ -138,22 +159,24 @@ class TradoTerminal:
         window_size = int(args[2]) if len(args) > 2 else 60
         
         try:
-            # Pass the existing market stream from the broker
-            start_live_chart(symbol, interval, market_stream=self.broker.market_stream, window_size=window_size)
+            # Pass the existing market stream
+            start_live_chart(symbol, interval, market_stream=self.market_stream, window_size=window_size)
         except Exception as e:
             print(self.formatter.format_alert("ERROR", f"Failed to start chart: {e}"))
 
     def _show_status(self):
         """Show system status"""
-        # Mock status for now
+        balance = self.execution_service.get_account_balance()
+        positions = self.execution_service.get_active_positions()
+        
         print("\n" + self.formatter.format_status("Broker", "Active", {
-            "Connected": "Yes",
-            "Balance": "$10,000.00",
-            "Open Positions": "0"
+            "Connected": "Yes" if self.market_stream.is_connected else "No",
+            "Balance": f"${balance:.2f}",
+            "Open Positions": str(len(positions))
         }))
         print(self.formatter.format_status("Risk Manager", "Active", {
-            "Daily Loss": "$0.00",
-            "Trades Today": "0"
+            "Daily Loss": f"${self.risk_manager.daily_loss}",
+            "Trades Today": f"{self.risk_manager.daily_trades_count}"
         }))
 
     def _show_risk_status(self):
@@ -187,9 +210,91 @@ class TradoTerminal:
             print(self.formatter.format_alert("WARNING", "Trade rejected by Risk Manager"))
             return
 
-        # 2. Execute (Mock for now, hook up to broker.place_trade later)
-        # self.broker.place_trade(...)
-        print(self.formatter.format_alert("SUCCESS", f"Order placed: {action} {amount} {symbol}"))
+        # 2. Execute
+        # Mapping: BUY -> CALL, SELL -> PUT (for Binary Options context)
+        order_type = OrderType.CALL if is_buy else OrderType.PUT
+        
+        order = OrderRequest(
+            symbol=symbol,
+            order_type=order_type,
+            side=OrderSide.BUY, # Always BUY for options (opening position)
+            quantity=amount,
+            duration=5, # Default duration
+            duration_unit='t'
+        )
+        
+        try:
+            result = self.execution_service.execute_order(order)
+            
+            if result.status == OrderStatus.FILLED:
+                print(self.formatter.format_alert("SUCCESS", f"Order filled: {result.order_id} @ {result.average_price}"))
+            else:
+                print(self.formatter.format_alert("ERROR", f"Order failed: {result.error_message}"))
+        except Exception as e:
+            print(self.formatter.format_alert("ERROR", f"Execution error: {e}"))
+
+    def _handle_replay(self, metadata: dict):
+        """Handle visual backtest replay"""
+        args = metadata.get('args', [])
+        
+        # Default values
+        symbol = "BTC-USD"
+        days = 60
+        interval = "1h"
+        
+        # Parse args: /replay [symbol] [days] [interval]
+        if len(args) >= 1: symbol = args[0]
+        if len(args) >= 2: 
+            try:
+                days = int(args[1])
+            except ValueError:
+                print(self.formatter.format_alert("ERROR", "Days must be a number"))
+                return
+        if len(args) >= 3: interval = args[2]
+        
+        print(self.formatter.format_alert("INFO", f"Starting replay for {symbol} ({days} days, {interval})"))
+        
+        try:
+            # Setup components
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
+            
+            data_provider = YFinanceDataProvider(cache_dir="data_cache")
+            
+            playback_engine = PlaybackEngine(
+                data_provider=data_provider,
+                symbols=[symbol],
+                start_date=start_date,
+                end_date=end_date,
+                interval=interval,
+                initial_speed=3600.0
+            )
+            
+            print(f"{Colors.GRAY}Loading historical data...{Colors.RESET}")
+            playback_engine.load_data()
+            
+            consumer = PlaybackChartConsumer(playback_engine, symbol)
+            
+            # Map interval string to seconds for LiveChart
+            interval_map = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '1d': 86400}
+            interval_seconds = interval_map.get(interval, 3600)
+            
+            chart = LiveChart(
+                symbol=symbol,
+                interval=interval_seconds,
+                refresh_rate=0.05,
+                consumer=consumer,
+                window_size=100
+            )
+            
+            # Start
+            playback_engine.play()
+            chart.start() # Blocks until exit
+            playback_engine.stop()
+            
+        except Exception as e:
+            print(self.formatter.format_alert("ERROR", f"Replay failed: {e}"))
+            logger.error(f"Replay error: {e}", exc_info=True)
 
 def main():
     terminal = TradoTerminal()
