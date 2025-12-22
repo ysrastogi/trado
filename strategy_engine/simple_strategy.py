@@ -26,5 +26,5 @@ class SimpleStrategy(BaseStrategy):
     def on_bar(self, bar_data: Dict[str, Any]) -> Optional[SignalEvent]:
         return None
         
-    def on_candle(self, candle: CandleData) -> Optional[SignalEvent]:
-        return super().on_candle(candle)
+    def on_candle(self, candle: CandleData, features: Optional[Dict[str, float]] = None) -> Optional[SignalEvent]:
+        return super().on_candle(candle, features)
