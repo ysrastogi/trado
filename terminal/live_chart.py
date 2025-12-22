@@ -45,7 +45,9 @@ class LiveChart:
     Live auto-refreshing candlestick chart with indicators
     """
     
-    def __init__(self, symbol: str, interval: int = 60, refresh_rate: float = 1.0, market_stream: Optional[Any] = None, window_size: int = 60):
+    def __init__(self, symbol: str, interval: int = 60, refresh_rate: float = 1.0, 
+                market_stream: Optional[Any] = None, window_size: int = 60,
+                consumer: Optional[Any] = None):
         """
         Initialize live chart
         
@@ -95,8 +97,11 @@ class LiveChart:
         # Suppress logs from feature_engine to prevent terminal clutter
         logging.getLogger('feature_engine.indicator_calculator').setLevel(logging.WARNING)
         
-        # Redis Consumer
-        self.consumer = ChartDataConsumer(self.symbol, self.interval, self.window_size)
+        # Data Consumer
+        if consumer:
+            self.consumer = consumer
+        else:
+            self.consumer = ChartDataConsumer(self.symbol, self.interval, self.window_size)
         
     def start(self):
         """Start the live chart display"""
@@ -187,18 +192,26 @@ class LiveChart:
                 self.active_indicator_index = self.active_indicator_index % len(self.secondary_indicators)
                 active_secondary = self.secondary_indicators[self.active_indicator_index]
             
+            # Get signals if available
+            signals = []
+            if hasattr(self.consumer, 'get_signals'):
+                signals = self.consumer.get_signals()
+
             # Render chart
             chart_output = self.plotter.render(
                 self.symbol, 
                 current_candles[-self.window_size:], # Show last n candles
                 {k: v[-self.window_size:] for k, v in indicators.items()},
                 self.interval_str,
-                active_secondary_indicator=active_secondary
+                active_secondary_indicator=active_secondary,
+                signals=signals
             )
             
             # Clear screen and display
-            print(f"{Colors.CLEAR_SCREEN}{Colors.MOVE_CURSOR_HOME}", end='')
-            print(chart_output)
+            # Use a more robust clear sequence
+            sys.stdout.write(f"{Colors.CLEAR_SCREEN}{Colors.MOVE_CURSOR_HOME}")
+            sys.stdout.write(chart_output)
+            sys.stdout.flush()
             
             # Display stats
             self._display_stats(current_candles[-1])
