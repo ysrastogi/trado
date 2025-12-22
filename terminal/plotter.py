@@ -13,7 +13,7 @@ try:
 except ImportError:
     plt = None
 
-from common.models import CandleData
+from common.models import CandleData, SignalEvent
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,8 @@ class TerminalPlotter:
     def render(self, symbol: str, candles: List[CandleData], 
                indicators: Dict[str, List[float]], 
                interval: str = "1m", width: int = 100, height: int = 30,
-               active_secondary_indicator: Optional[str] = None) -> str:
+               active_secondary_indicator: Optional[str] = None,
+               signals: Optional[List[SignalEvent]] = None) -> str:
         """
         Render the chart with candles and indicators
         """
@@ -89,6 +90,55 @@ class TerminalPlotter:
             if any(v is not None for v in clean_values):
                 plt.plot(dates, clean_values, label=name, color=color)
         
+        # Plot Signals
+        if signals:
+            # Map signals to current dates
+            # We need to find which signals correspond to the visible candles
+            # This is approximate as signals have timestamps
+            
+            buy_dates = []
+            buy_prices = []
+            sell_dates = []
+            sell_prices = []
+            
+            # Create a lookup for candle timestamps
+            candle_ts_map = {c.timestamp: c for c in candles}
+            
+            for signal in signals:
+                # Find closest candle or exact match
+                # For simplicity, we check if signal timestamp is in our visible range
+                if not candles: continue
+                
+                if candles[0].timestamp <= signal.timestamp <= candles[-1].timestamp:
+                    # Find the corresponding candle (or closest)
+                    # Since we formatted dates as H:M, we need to match that
+                    formatted_date = self._format_date(signal.timestamp)
+                    
+                    # Check if this date is in our x-axis
+                    if formatted_date in dates:
+                        # Use the candle's close or the signal's price if available
+                        # SignalEvent doesn't strictly have price, but usually it's close
+                        price = 0
+                        if signal.candle and 'close' in signal.candle:
+                            price = signal.candle['close']
+                        else:
+                            # Fallback to finding the candle in our list
+                            # This is O(N), could be optimized
+                            idx = dates.index(formatted_date)
+                            price = closes[idx]
+                        
+                        if 'buy' in signal.signal_type.lower() or 'bullish' in signal.signal_type.lower():
+                            buy_dates.append(formatted_date)
+                            buy_prices.append(price * 0.995) # Slightly below
+                        elif 'sell' in signal.signal_type.lower() or 'bearish' in signal.signal_type.lower():
+                            sell_dates.append(formatted_date)
+                            sell_prices.append(price * 1.005) # Slightly above
+
+            if buy_dates:
+                plt.scatter(buy_dates, buy_prices, marker="triangle", color="green", label="Buy Signal")
+            if sell_dates:
+                plt.scatter(sell_dates, sell_prices, marker="inverted_triangle", color="red", label="Sell Signal")
+
         plt.plot_size(width, 20) # Give price more space
         try:
             output_parts.append(plt.build())
