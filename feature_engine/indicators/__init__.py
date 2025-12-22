@@ -8,6 +8,7 @@ from .moving_averages import SMAIndicator, EMAIndicator, WMAIndicator, HMAIndica
 from .momentum import RSIIndicator, MACDIndicator, StochasticIndicator, WilliamsRIndicator, ROCIndicator, CCIIndicator
 from .volatility import ATRIndicator, ADXIndicator, BollingerBandsIndicator, SuperTrendIndicator
 from .volume import OBVIndicator
+from .donchian import DonchianChannelsIndicator
 
 __all__ = [
     # Base classes
@@ -27,4 +28,7 @@ __all__ = [
 
     # Volume
     'OBVIndicator',
+
+    # Others
+    'DonchianChannelsIndicator'
 ]
