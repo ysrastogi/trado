@@ -67,6 +67,7 @@ class PlaybackEngine:
         
         # Event callbacks
         self._tick_callbacks: List[Callable[[TickData, str], None]] = []
+        self._candle_callbacks: List[Callable[[CandleData, str], None]] = []
         self._signal_callbacks: List[Callable[[SignalEvent], None]] = []
         self._state_callbacks: List[Callable[[PlaybackState], None]] = []
         
@@ -97,6 +98,7 @@ class PlaybackEngine:
             
             self._candles[symbol] = candles
             self._current_index[symbol] = 0
+            logger.info(f"Loaded {len(candles)} candles for {symbol}")
             
             logger.info(f"Loaded {len(candles)} candles for {symbol}")
         
@@ -118,6 +120,18 @@ class PlaybackEngine:
             callback: Function(tick, symbol) to call for each tick
         """
         self._tick_callbacks.append(callback)
+
+    def register_candle_callback(
+        self,
+        callback: Callable[[CandleData, str], None]
+    ) -> None:
+        """
+        Register a callback to receive candle data
+        
+        Args:
+            callback: Function(candle, symbol) to call for each candle
+        """
+        self._candle_callbacks.append(callback)
     
     def register_signal_callback(
         self,
@@ -406,6 +420,13 @@ class PlaybackEngine:
             # Emit ticks
             for tick in ticks:
                 self._emit_tick(tick, symbol)
+            
+            # Emit candle event
+            for callback in self._candle_callbacks:
+                try:
+                    callback(candle, symbol)
+                except Exception as e:
+                    logger.error(f"Error in candle callback: {e}")
             
             # Advance index
             self._current_index[symbol] += 1
