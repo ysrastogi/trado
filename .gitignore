@@ -6,3 +6,5 @@ backtest_reports/
 logs/
 .DS_Store
 .github/
+*.pkl
+*.log
