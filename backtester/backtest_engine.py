@@ -10,6 +10,8 @@ from datetime import datetime
 from backtester.engine import PlaybackEngine
 from backtester.execution_simulator import ExecutionSimulator
 from strategy_engine.base_strategy import BaseStrategy
+from feature_engine.indicator_calculator import IndicatorCalculator
+from feature_engine.models import FeatureConfig
 from common.models import (
     SignalEvent, 
     OrderType, 
@@ -35,42 +37,153 @@ class BacktestEngine:
         execution_simulator: ExecutionSimulator,
         strategy_class: Type[BaseStrategy],
         strategy_config: Dict[str, Any],
-        initial_capital: float = 100000.0
+        initial_capital: float = 100000.0,
+        signal_timeframe: Optional[str] = None
     ):
         self.playback = playback_engine
         self.execution = execution_simulator
         self.initial_capital = initial_capital
         self.current_capital = initial_capital
+        self.signal_timeframe = signal_timeframe
+        
+        # Equity Curve Tracking
+        self.equity_curve: List[Dict[str, Any]] = []
+        
+        # Candle Aggregation State
+        self.current_aggregated_candle: Dict[str, CandleData] = {} # {symbol: candle}
+        self.aggregation_start_time: Dict[str, datetime] = {}
+        self.aggregated_history: Dict[str, List[CandleData]] = {} # {symbol: [candles]}
         
         # Initialize strategy
         self.strategy = strategy_class(config=strategy_config)
         
+        # Initialize Calculator
+        self.feature_config = FeatureConfig.from_dict(strategy_config.get('features', {}))
+        self.calculator = IndicatorCalculator(self.feature_config)
+        
+        # Pre-calculate Indicators
+        self.precalculated_features = {} # {symbol: {indicator_name: [values]}}
+        # Only pre-calculate if we are NOT aggregating on the fly
+        if not self.signal_timeframe or self.signal_timeframe == self.playback.interval:
+            self._precalculate_features()
+        
         # Register callbacks
         self.playback.register_tick_callback(self._on_tick)
-        # We might need a candle callback if PlaybackEngine supports it, 
-        # otherwise we might need to aggregate ticks or rely on PlaybackEngine feeding candles if it does that.
-        # Looking at PlaybackEngine, it seems to feed candles via _process_next_candles -> _emit_tick (converting candle to ticks).
-        # But BaseStrategy has on_candle. We might need to adapt this.
+        self.playback.register_candle_callback(self._on_candle)
+
+    def _precalculate_features(self):
+        """Run indicators on all historical data before backtest starts"""
+        # Ensure data is loaded
+        if not self.playback._candles:
+            self.playback.load_data()
+            
+        for symbol in self.playback.symbols:
+            candles = self.playback._candles.get(symbol, [])
+            if candles:
+                self.precalculated_features[symbol] = self.calculator.calculate_indicators(candles)
+                logger.info(f"Pre-calculated features for {symbol}: {list(self.precalculated_features[symbol].keys())}")
+
+    def _on_candle(self, candle: CandleData, symbol: str):
+        """Handle candle close"""
+        # logger.info(f"Received candle: {candle.timestamp}")
         
-        # For now, let's assume we trigger strategy on ticks, or we need to modify PlaybackEngine to emit candles too.
-        # Actually PlaybackEngine reads candles. It converts them to ticks to simulate real-time feed.
-        # But for backtesting strategies often work on closed candles.
+        # 1. Update Execution Simulator with latest price
+        self.execution.update_market_conditions(symbol, MarketConditions(
+            symbol=symbol,
+            current_price=candle.close,
+            bid_price=candle.close, # Simplified
+            ask_price=candle.close, # Simplified
+            spread_bps=0.0,
+            average_daily_volume=candle.volume, # Approximation
+            current_volume=candle.volume,
+            volatility=0.2, # Placeholder
+            liquidity_score=1.0
+        ))
         
-        # Let's check if PlaybackEngine has a candle callback.
-        # It has _tick_callbacks, _signal_callbacks, _state_callbacks.
-        # It does NOT seem to have a candle callback exposed publicly in the interface I read.
-        # However, it has `_candles` storage.
+        # 2. Track Equity
+        # Note: This is a simplification. Ideally we mark-to-market all open positions.
+        # For now we just track cash + unrealized PnL if we had access to positions.
+        # Since ExecutionSimulator doesn't expose open positions easily, we might need to rely on realized PnL.
+        # But let's just track timestamp for now.
+        self.equity_curve.append({
+            'timestamp': candle.timestamp,
+            'equity': self.current_capital # This needs to be updated with PnL
+        })
+
+        # 3. Handle Aggregation or Direct Pass-through
+        if self.signal_timeframe and self.signal_timeframe != self.playback.interval:
+            self._handle_aggregated_candle(candle, symbol)
+        else:
+            self._handle_direct_candle(candle, symbol)
+
+    def _handle_direct_candle(self, candle: CandleData, symbol: str):
+        # Get current index from playback engine
+        current_idx = self.playback._current_index.get(symbol, 0)
         
-        # If the strategy needs candles, we might need to reconstruct them or modify PlaybackEngine.
-        # But wait, PlaybackEngine.load_data loads candles.
+        # Extract features for this specific candle index
+        current_features = {}
+        if symbol in self.precalculated_features:
+            for name, values in self.precalculated_features[symbol].items():
+                if current_idx < len(values):
+                    current_features[name] = values[current_idx]
         
-        # Let's assume for now we drive the strategy via ticks, and the strategy aggregates them or we add a candle callback to PlaybackEngine later.
-        # Or better, let's add a candle callback to PlaybackEngine if it's missing, or check if I missed it.
-        # I read `backtester/engine.py` lines 1-100 and 101-452.
-        # It has `_emit_tick`.
+        # Pass to strategy
+        signal = self.strategy.on_candle(candle, features=current_features)
         
-        # Let's implement `_on_tick` to pass data to strategy.
+        if signal:
+            self._handle_signal(signal)
+
+    def _handle_aggregated_candle(self, candle: CandleData, symbol: str):
+        """Aggregate high-frequency candles into signal timeframe"""
+        # Parse timeframes (assuming '1m', '5m' format)
+        try:
+            tf_min = int(self.signal_timeframe[:-1])
+        except ValueError:
+            logger.error(f"Invalid signal timeframe: {self.signal_timeframe}")
+            return
         
+        # Initialize if needed
+        if symbol not in self.current_aggregated_candle:
+            self.aggregation_start_time[symbol] = candle.timestamp
+            self.current_aggregated_candle[symbol] = candle
+            return
+
+        # Update current aggregated candle
+        curr = self.current_aggregated_candle[symbol]
+        curr.high = max(curr.high, candle.high)
+        curr.low = min(curr.low, candle.low)
+        curr.close = candle.close
+        curr.volume += candle.volume
+        
+        # Check if aggregation period is complete
+        # Simple check: if time difference >= timeframe
+        time_diff = candle.timestamp - self.aggregation_start_time[symbol]
+        if time_diff.total_seconds() >= (tf_min * 60) - 60: # -60 because we are at the END of the minute
+             
+             # Add to history
+             if symbol not in self.aggregated_history:
+                 self.aggregated_history[symbol] = []
+             self.aggregated_history[symbol].append(curr)
+             
+             # Calculate indicators on the fly
+             # We need enough history for indicators
+             # Optimization: Only calculate for the last candle, but Calculator might need full series
+             # For now, we recalculate on the growing list. This is slow but correct.
+             features = self.calculator.calculate_indicators(self.aggregated_history[symbol])
+             
+             # Extract latest features
+             current_features = {k: v[-1] for k, v in features.items() if len(v) > 0}
+             
+             # Pass to strategy
+             signal = self.strategy.on_candle(curr, features=current_features)
+             
+             if signal:
+                 self._handle_signal(signal)
+             
+             # Reset
+             del self.current_aggregated_candle[symbol]
+
+
     def start(self):
         """Start the backtest"""
         logger.info("Starting backtest...")
