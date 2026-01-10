@@ -1,6 +1,11 @@
 # Trado 📈
 
-**Trado** is a sophisticated, modular algorithmic trading engine built for the **Deriv API**. It features a professional interactive terminal, a robust strategy execution engine, and a flexible backtesting framework. Designed for developers and quants, Trado emphasizes modularity, type safety, and extensibility.
+**Trado** is a modular algorithmic trading engine designed for high-performance backtesting, paper trading, and live execution.
+
+Key architectural highlights include:
+*   **Event-Driven & Vectorized Hybrid**: Combines the speed of vectorized backtesting with the realism of event-driven live execution.
+*   **Centralized Analytics**: A dedicated analytics engine that observes trades across all environments (Backtest/Paper/Live) to provide real-time performance metrics like Sharpe Ratio, Drawdown, and MAE/MFE.
+*   **Asset Agnostic**: Seamlessly switches between Synthetic Indices (Deriv) and Equities/F&O (Dhan, NSE/BSE).
 
 <img width="6378" height="3218" alt="image" src="https://github.com/user-attachments/assets/04b1faa9-dc0d-4e88-a756-a18ac4481a49" />
 
@@ -67,44 +72,48 @@ trado/
     REDIS_URL=redis://localhost:6379/0
     ```
 
+## � Documentation
+- [Strategy Engine Guide](docs/STRATEGY_GUIDE.md): How to build strategies, use indicators, and integrate analytics.- [Feature Engine Guide](docs/FEATURE_ENGINE_GUIDE.md): Architecture of indicators, creating new ones, and multi-timeframe logic.
+- [Backtesting Guide](docs/BACKTESTING_GUIDE.md): Configuration, running simulations, and using different data sources.
+- [Paper Trading Guide](PAPER_TRADING_IMPLEMENTATION.md): Details on the paper trading system.
+- [Quick Reference](QUICK_REFERENCE.md): Cheat sheet for common tasks.
+
 ## 🖥️ Usage
 
-### Launching the Terminal
-
-Start the interactive trading environment:
-
+### 1. Interactive Terminal
+The core terminal for manual trading and system monitoring:
 ```bash
 python main.py
 ```
+**Commands:** `/help`, `/status`, `/buy`, `/sell`, `/strategy`, `/risk`
 
-### Terminal Commands
+### 2. Backtesting
+Run simulations against historical data.
 
-Once inside the terminal, use the following commands:
-
-- **/help**: Show available commands.
-- **/status**: Display connection status and account balance.
-- **/buy [symbol] [amount]**: Execute a buy order.
-- **/sell [symbol] [amount]**: Execute a sell order.
-- **/chart**: View real-time market data.
-- **/strategy**: Manage active strategies.
-- **/risk**: View or configure risk parameters.
-- **/exit**: Close the application.
-
-## 🧪 Development
-
-### Running Tests
-
-Trado uses `pytest` for testing. Run the full suite:
-
+**Momentum Strategy on Nifty 200:**
 ```bash
-python -m pytest tests/ -v
+python run_backtest_nifty200.py
 ```
 
-To run specific tests for the feature engine:
-
+**Single Stock (Interactive/Specific):**
 ```bash
-python -m pytest tests/test_feature_engine.py -v
+python run_backtest_momentum.py
 ```
+*Check `backtest_reports/` for generated Markdown reports.*
+
+### 3. Paper Trading (Forward Testing)
+Run strategies in live markets with simulated execution:
+```bash
+python run_paper_momentum.py
+```
+*Set `DERIV_AUTH_TOKEN` or `DHAN_ACCESS_TOKEN` in `.env` before running.*
+
+### 4. Optimization
+Run parameter optimization (Grid/Random Search):
+```bash
+python run_optimization.py
+```
+
 
 ### Adding New Indicators
 
@@ -119,7 +128,3 @@ Trado uses a **Registry Pattern** for indicators. To add a new one:
         ...
     ```
 4.  It will automatically be available in the `IndicatorCalculator`.
-
-## ⚠️ Disclaimer
-
-**Trading involves significant risk.** This software is for educational and development purposes only. The authors are not responsible for any financial losses incurred while using this software. Always test strategies thoroughly in a demo environment before trading with real capital.
