@@ -120,13 +120,14 @@ class TradingClient:
             return None
         
         with self.request_lock:
-            req_id = self.market_stream._get_next_request_id()
+            # Use public methods instead of private ones
+            req_id = self.market_stream.get_next_request_id()
             request['req_id'] = req_id
             
             if callback:
                 self.request_callbacks[req_id] = callback
             
-            self.market_stream._send_message(request)
+            self.market_stream.send_message(request)
             self.pending_requests[req_id] = {
                 'request': request,
                 'timestamp': datetime.now(),
