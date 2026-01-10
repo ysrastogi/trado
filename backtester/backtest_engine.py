@@ -15,9 +15,15 @@ from feature_engine.models import FeatureConfig
 from common.models import (
     SignalEvent, 
     OrderType, 
+    OrderStatus,
     MarketConditions,
     PlaybackState,
     CandleData
+)
+from common.events import (
+    EventBus, EventType, Event,
+    OrderCreatedEventData, OrderFilledEventData,
+    EquityUpdateEventData
 )
 from data_layer.market_stream.models import TickData
 
@@ -38,13 +44,18 @@ class BacktestEngine:
         strategy_class: Type[BaseStrategy],
         strategy_config: Dict[str, Any],
         initial_capital: float = 100000.0,
-        signal_timeframe: Optional[str] = None
+        signal_timeframe: Optional[str] = None,
+        event_bus: Optional[EventBus] = None
     ):
         self.playback = playback_engine
         self.execution = execution_simulator
         self.initial_capital = initial_capital
         self.current_capital = initial_capital
         self.signal_timeframe = signal_timeframe
+        self.event_bus = event_bus
+        
+        # Position Tracker {symbol: {'quantity': float, 'avg_price': float}}
+        self.positions: Dict[str, Dict[str, Any]] = {}
         
         # Equity Curve Tracking
         self.equity_curve: List[Dict[str, Any]] = []
@@ -109,6 +120,19 @@ class BacktestEngine:
             'timestamp': candle.timestamp,
             'equity': self.current_capital # This needs to be updated with PnL
         })
+        
+        # Publish Equity Update Event
+        if self.event_bus:
+            self.event_bus.publish(Event(
+                EventType.EQUITY_UPDATE,
+                candle.timestamp,
+                EquityUpdateEventData(
+                    timestamp=candle.timestamp,
+                    equity=self.current_capital,
+                    cash=self.current_capital, # Assuming 100% cash for now as positions simplistically managed
+                    margin_used=0.0
+                )
+            ))
 
         # 3. Handle Aggregation or Direct Pass-through
         if self.signal_timeframe and self.signal_timeframe != self.playback.interval:
@@ -189,6 +213,45 @@ class BacktestEngine:
         logger.info("Starting backtest...")
         self.playback.play()
         
+    def get_performance_metrics(self) -> Dict[str, Any]:
+        """
+        Calculate and return performance metrics including:
+        - Total Return %
+        - Sharpe Ratio
+        - Max Drawdown
+        - Win Rate
+        """
+        from backtester.reporter import BacktestReporter
+        
+        # 1. Gather stats from execution simulator
+        stats = self.execution.get_execution_statistics()
+        
+        # 2. Add equity curve and executions for metric calculation
+        stats['equity_curve'] = self.equity_curve
+        stats['executions'] = self.execution.execution_history
+        
+        # 3. Calculate advanced metrics using Reporter logic
+        reporter = BacktestReporter()
+        metrics = reporter.calculate_metrics(stats)
+        
+        # Merge metrics back into stats to include all execution stats
+        stats.update(metrics)
+        
+        # 4. Add simple Total Return % if not present
+        if self.equity_curve:
+            start_equity = self.initial_capital
+            end_equity = self.current_capital # OR self.equity_curve[-1]['equity']
+            total_return = (end_equity - start_equity) / start_equity
+            stats['total_return_pct'] = total_return * 100
+            stats['final_equity'] = end_equity
+            stats['initial_capital'] = self.initial_capital
+            
+        # 5. Map keys to expected names
+        if 'sharpe' in stats:
+            stats['sharpe_ratio'] = stats['sharpe']
+            
+        return stats
+
     def stop(self):
         """Stop the backtest"""
         self.playback.stop()
@@ -226,34 +289,117 @@ class BacktestEngine:
         """Process signal from strategy"""
         logger.info(f"Received signal: {signal.signal_type} for {signal.symbol}")
         
+        # Publish Signal Event
+        if self.event_bus:
+            self.event_bus.publish(Event(EventType.SIGNAL, signal.timestamp, signal))
+        
+        symbol = signal.symbol
+        # Get current position
+        current_pos = self.positions.get(symbol, {'quantity': 0.0, 'avg_price': 0.0})
+        existing_qty = current_pos['quantity']
+        
         # Convert signal to order
-        quantity = 0
+        quantity = 0.0
         side = None
+        
+        # Determine price for sizing
+        price = signal.indicators.get('price', 0.0)
+        if price <= 0:
+             # Fallback to execution state if price missing in signal
+             market = self.execution.market_state.get(symbol)
+             price = market.current_price if market else 100.0
         
         if "BUY" in signal.signal_type or "LONG" in signal.signal_type:
             side = "buy"
             # Simple position sizing: 10% of capital
-            price = signal.indicators.get('price', 100.0) # Should come from signal or market
-            quantity = (self.current_capital * 0.1) / price
+            if self.current_capital > 0 and price > 0:
+                quantity = (self.current_capital * 0.1) / price
+                
         elif "SELL" in signal.signal_type or "SHORT" in signal.signal_type:
             side = "sell"
-            # Logic to close position or go short
-            quantity = 100 # Placeholder
+            # Logic to close ENTIRE position
+            quantity = existing_qty
             
         if side and quantity > 0:
+            # Publish Order Created
+            if self.event_bus:
+                self.event_bus.publish(Event(
+                    EventType.ORDER_CREATED, 
+                    signal.timestamp, 
+                    OrderCreatedEventData(
+                        order_id=f"ORD-{signal.timestamp.timestamp()}",
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        price=price,
+                        order_type="MARKET",
+                        timestamp=signal.timestamp
+                    )
+                ))
+
+            # Capture state before execution for validation
+            prev_capital = self.current_capital
+
             execution = self.execution.simulate_order(
                 symbol=signal.symbol,
                 side=side,
                 quantity=quantity,
-                order_type=OrderType.MARKET
+                order_type=OrderType.MARKET,
+                current_price=price  # Pass invalidates fallback
             )
             
-            if execution.status == "filled":
-                logger.info(f"Executed {side} {quantity} {signal.symbol} @ {execution.average_fill_price}")
-                # Update capital (simplified)
-                cost = execution.get_total_cost()
+            if execution.status == OrderStatus.FILLED:
+                logger.info(f"Executed {side} {quantity:.2f} {signal.symbol} @ {execution.average_fill_price:.2f}")
+                
+                # Publish Order Filled
+                if self.event_bus:
+                    self.event_bus.publish(Event(
+                        EventType.ORDER_FILLED,
+                        signal.timestamp,
+                        OrderFilledEventData(
+                            order_id=execution.order_id,
+                            symbol=symbol,
+                            side=side,
+                            filled_quantity=execution.filled_quantity,
+                            price=execution.average_fill_price,
+                            timestamp=execution.timestamp,
+                            commission=execution.commission,
+                            slippage=execution.slippage
+                        )
+                    ))
+
+                fill_val = execution.filled_quantity * execution.average_fill_price
+                commission = execution.commission
+                
                 if side == 'buy':
-                    self.current_capital -= (execution.filled_quantity * execution.average_fill_price + cost)
-                else:
-                    self.current_capital += (execution.filled_quantity * execution.average_fill_price - cost)
+                    # Cash Outflow: Price + Commission
+                    self.current_capital -= (fill_val + commission)
+                    
+                    # Update Position Logic (Weighted Average Price)
+                    old_cost = existing_qty * current_pos['avg_price']
+                    new_qty = existing_qty + execution.filled_quantity
+                    new_avg = (old_cost + fill_val) / new_qty if new_qty > 0 else 0.0
+                    
+                    self.positions[symbol] = {
+                        'quantity': new_qty,
+                        'avg_price': new_avg
+                    }
+                    
+                else: # sell
+                    # Cash Inflow: Price - Commission
+                    self.current_capital += (fill_val - commission)
+                    
+                    # Calculate Realized PnL
+                    avg_entry = current_pos['avg_price']
+                    realized_pnl = ((execution.average_fill_price - avg_entry) * execution.filled_quantity) - commission
+                    
+                    print(f"Trade Closed: {symbol} | PnL: {realized_pnl:.2f} | Capital: {self.current_capital:.2f}")                    
+                    # VALIDATION: Equity MUST change
+                    assert self.current_capital != prev_capital, "CRITICAL: Equity did not change after trade! Check PnL logic."                    
+                    # Close Position
+                    remaining_qty = existing_qty - execution.filled_quantity
+                    if remaining_qty < 0.0001:
+                        self.positions[symbol] = {'quantity': 0.0, 'avg_price': 0.0}
+                    else:
+                        self.positions[symbol]['quantity'] = remaining_qty
 
