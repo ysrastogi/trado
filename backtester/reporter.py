@@ -27,7 +27,7 @@ class BacktestReporter:
         filepath = self.output_dir / filename
         
         # Calculate Advanced Metrics
-        metrics = self._calculate_metrics(stats)
+        metrics = self.calculate_metrics(stats)
         
         with open(filepath, 'w') as f:
             f.write(f"# Backtest Report: {strategy_name}\n\n")
@@ -61,7 +61,7 @@ class BacktestReporter:
                 
         return filepath
 
-    def _calculate_metrics(self, stats: Dict[str, Any]) -> Dict[str, Any]:
+    def calculate_metrics(self, stats: Dict[str, Any]) -> Dict[str, Any]:
         """Calculate advanced financial metrics"""
         equity_curve = stats.get('equity_curve', [])
         executions = stats.get('executions', [])
@@ -114,6 +114,7 @@ class BacktestReporter:
             symbol_pnl[t['symbol']] = symbol_pnl.get(t['symbol'], 0) + t['pnl']
 
         return {
+            'total_trades': len(trades),
             'cagr': cagr * 100,
             'sharpe': sharpe,
             'max_drawdown': max_drawdown,
@@ -126,9 +127,9 @@ class BacktestReporter:
         }
 
     def _match_trades(self, executions: List[Any]) -> List[Dict]:
-        """Match buy/sell executions into trades using FIFO"""
+        """Match buy/sell executions into trades using FIFO and calculating Net PnL"""
         trades = []
-        positions = {} # {symbol: deque([{'price':, 'qty':, 'time':, 'side':}])}
+        positions = {} # {symbol: deque([{'price':, 'qty':, 'time':, 'side':, 'comm_per_unit':}])}
         
         # Helper to get attribute or dict item
         def get_val(obj, key):
@@ -141,18 +142,23 @@ class BacktestReporter:
         for exc in sorted_execs:
             symbol = get_val(exc, 'symbol')
             side = get_val(exc, 'side')
-            qty = get_val(exc, 'filled_quantity') # Use filled_quantity instead of quantity
-            if qty is None: # Fallback for dicts that might use 'quantity'
+            qty = get_val(exc, 'filled_quantity') 
+            if qty is None: 
                  qty = get_val(exc, 'quantity')
             
-            price = get_val(exc, 'average_fill_price') # Use average_fill_price
+            price = get_val(exc, 'average_fill_price')
             if price is None:
                 price = get_val(exc, 'price')
+            
+            # Commission handling
+            commission = get_val(exc, 'commission') or 0.0
                 
             time = get_val(exc, 'timestamp')
             
             if not qty or qty == 0:
                 continue
+            
+            comm_per_unit = commission / qty if qty > 0 else 0.0
             
             if symbol not in positions:
                 positions[symbol] = deque()
@@ -163,7 +169,8 @@ class BacktestReporter:
                     'price': price,
                     'qty': qty,
                     'time': time,
-                    'side': side
+                    'side': side,
+                    'comm_per_unit': comm_per_unit
                 })
             else:
                 # Closing position
@@ -172,17 +179,25 @@ class BacktestReporter:
                     open_pos = positions[symbol][0]
                     match_qty = min(remaining_qty, open_pos['qty'])
                     
-                    # Calculate PnL
+                    # Calculate Gross PnL
                     if side == 'sell': # Closing Long
-                        pnl = (price - open_pos['price']) * match_qty
+                        gross_pnl = (price - open_pos['price']) * match_qty
                     else: # Closing Short
-                        pnl = (open_pos['price'] - price) * match_qty
+                        gross_pnl = (open_pos['price'] - price) * match_qty
+                    
+                    # Calculate Commission for this portion
+                    entry_comm = open_pos['comm_per_unit'] * match_qty
+                    exit_comm = comm_per_unit * match_qty
+                    
+                    net_pnl = gross_pnl - entry_comm - exit_comm
                         
                     duration = time - open_pos['time']
                     
                     trades.append({
                         'symbol': symbol,
-                        'pnl': pnl,
+                        'pnl': net_pnl, # NET PnL
+                        'gross_pnl': gross_pnl,
+                        'commission': entry_comm + exit_comm,
                         'duration': duration,
                         'entry_time': open_pos['time'],
                         'exit_time': time
@@ -201,7 +216,8 @@ class BacktestReporter:
                         'price': price,
                         'qty': remaining_qty,
                         'time': time,
-                        'side': side
+                        'side': side,
+                        'comm_per_unit': comm_per_unit
                     })
                     
         return trades
