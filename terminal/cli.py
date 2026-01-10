@@ -19,6 +19,16 @@ from risk_manager.risk_manager import RiskManager
 from data_layer.historical_data_provider import YFinanceDataProvider
 from backtester.engine import PlaybackEngine
 from terminal.playback_consumer import PlaybackChartConsumer
+from backtester.backtest_engine import BacktestEngine
+from backtester.execution_simulator import ExecutionSimulator
+from strategy_engine.momentum_strategy import MomentumStrategy
+
+try:
+    from data_layer.dhan_data_provider import DhanDataProvider
+    from data_layer.dhan_backtest_adapter import DhanBacktestAdapter
+    HAS_DHAN = True
+except ImportError:
+    HAS_DHAN = False
 from datetime import datetime, timedelta
 import yaml
 
@@ -118,6 +128,9 @@ class TradoTerminal:
             
         elif command_type == CommandType.REPLAY:
             self._handle_replay(metadata)
+
+        elif command_type == CommandType.BACKTEST:
+             self._handle_backtest(metadata)
             
         elif command_type == CommandType.RISK:
             self._show_risk_status()
@@ -143,9 +156,112 @@ class TradoTerminal:
             ["/sell <symbol> <amount>", "Place a sell order"],
             ["/risk", "Show risk management metrics"],
             ["/live <symbol> [interval] [window_size]", "Open live chart with indicators"],
+            ["/replay [symbol] [days]", "Run visual backtest replay"],
+            ["/backtest [symbols...]", "Run headless statistical backtest"],
             ["/exit", "Exit the terminal"]
         ]
         print("\n" + self.formatter.format_table(help_text[0], help_text[1:]))
+
+    def _handle_backtest(self, metadata: dict):
+        """Handle headless backtest command"""
+        args = metadata.get('args', [])
+        
+        # Default settings
+        symbols = ["NIFTY", "BANKNIFTY"]
+        days = 30
+        timeframe = "5m"
+        
+        # Parse args: /backtest s1 s2 ...
+        if args:
+            symbols = [s.upper() for s in args]
+            
+        print(self.formatter.format_alert("INFO", f"Starting backtest for {symbols}"))
+        print(f"{Colors.GRAY}Period: {days} days, Timeframe: {timeframe}{Colors.RESET}")
+        
+        start_date = datetime.now() - timedelta(days=days) 
+        end_date = datetime.now()
+        
+        # Setup Data Provider
+        if HAS_DHAN:
+            try:
+                # Assuming simple init or need to check DhanBacktestAdapter signature
+                data_provider = DhanBacktestAdapter(DhanDataProvider())
+                print(f"{Colors.GRAY}Using Dhan Data Provider{Colors.RESET}")
+            except Exception as e:
+                print(self.formatter.format_alert("WARNING", f"Failed to init Dhan provider: {e}. Falling back to YFinance."))
+                data_provider = YFinanceDataProvider(cache_dir="data_cache")
+        else:
+            data_provider = YFinanceDataProvider(cache_dir="data_cache")
+            print(f"{Colors.GRAY}Using YFinance Data Provider{Colors.RESET}")
+            
+        # Run loop
+        for symbol in symbols:
+            try:
+                print(f"\n{Colors.AQUA}Running backtest for {symbol}...{Colors.RESET}")
+                
+                # Setup Playback
+                playback = PlaybackEngine(
+                    data_provider=data_provider,
+                    symbols=[symbol],
+                    start_date=start_date,
+                    end_date=end_date,
+                    interval=timeframe,
+                    initial_speed=0 # Max speed
+                )
+                
+                # Load Data
+                print(f"{Colors.GRAY}Loading data...{Colors.RESET}")
+                playback.load_data()
+                
+                if not playback._candles.get(symbol):
+                    print(self.formatter.format_alert("WARNING", f"No data found for {symbol}"))
+                    continue
+                
+                print(f"Loaded {len(playback._candles[symbol])} candles")
+                
+                # Setup Strategy Config
+                strategy_config = {
+                    "risk_per_trade": 0.01,
+                    "asset_type": "index", 
+                    "features": {
+                        "indicators": [
+                            {"name": "donchian", "params": {"length": 20}},
+                            {"name": "roc", "params": {"length": 12}},
+                            {"name": "sma", "params": {"length": 10, "input_column": "close"}}, 
+                        ],
+                        "timeframes": ["15m"]
+                    }
+                }
+                
+                # Run Engine
+                execution = ExecutionSimulator()
+                engine = BacktestEngine(
+                    playback_engine=playback,
+                    execution_simulator=execution,
+                    strategy_class=MomentumStrategy,
+                    strategy_config=strategy_config
+                )
+                
+                engine.start()
+                
+                # Wait for completion
+                while playback.get_state().value == "playing":
+                    time.sleep(0.01)
+                    
+                # Results
+                balance = execution.current_capital
+                pnl = balance - execution.initial_capital
+                pnl_pct = (pnl / execution.initial_capital) * 100
+                trades = len(execution.trade_history)
+                
+                color = Colors.GREEN if pnl >= 0 else Colors.RED
+                print(f"Result for {symbol}: {color}${pnl:.2f} ({pnl_pct:.2f}%){Colors.RESET} | Trades: {trades}")
+                
+            except Exception as e:
+                print(self.formatter.format_alert("ERROR", f"Backtest failed for {symbol}: {e}"))
+                logger.error(f"Backtest error for {symbol}: {e}", exc_info=True)
+                
+        print(f"\n{Colors.AQUA}Backtest Batch Completed.{Colors.RESET}")
 
     def _handle_live_chart(self, metadata: dict):
         """Handle live chart command"""
