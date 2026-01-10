@@ -23,7 +23,7 @@ from common.models import (
 from common.events import (
     EventBus, EventType, Event,
     OrderCreatedEventData, OrderFilledEventData,
-    EquityUpdateEventData
+    EquityUpdateEventData, TradeClosedEventData
 )
 from data_layer.market_stream.models import TickData
 
@@ -380,9 +380,20 @@ class BacktestEngine:
                     new_qty = existing_qty + execution.filled_quantity
                     new_avg = (old_cost + fill_val) / new_qty if new_qty > 0 else 0.0
                     
+                    # Preserve entry time if adding to position, else set new
+                    entry_time = current_pos.get('entry_time', signal.timestamp)
+                    # Preserve entry signal
+                    entry_signal = current_pos.get('entry_signal', signal)
+                    
+                    if existing_qty == 0:
+                        entry_time = signal.timestamp
+                        entry_signal = signal
+
                     self.positions[symbol] = {
                         'quantity': new_qty,
-                        'avg_price': new_avg
+                        'avg_price': new_avg,
+                        'entry_time': entry_time,
+                        'entry_signal': entry_signal
                     }
                     
                 else: # sell
@@ -393,7 +404,41 @@ class BacktestEngine:
                     avg_entry = current_pos['avg_price']
                     realized_pnl = ((execution.average_fill_price - avg_entry) * execution.filled_quantity) - commission
                     
-                    print(f"Trade Closed: {symbol} | PnL: {realized_pnl:.2f} | Capital: {self.current_capital:.2f}")                    
+                    print(f"Trade Closed: {symbol} | PnL: {realized_pnl:.2f} | Capital: {self.current_capital:.2f}")
+
+                    # Construct TradeRecord
+                    from common.models import TradeRecord # Ensure local import if needed or rely on top level
+                    trade = TradeRecord(
+                        trade_id=f"TRD-{signal.timestamp.timestamp()}",
+                        symbol=symbol,
+                        trade_number=0, # Simplification
+                        entry_time=current_pos.get('entry_time', signal.timestamp),
+                        entry_price=avg_entry,
+                        entry_quantity=execution.filled_quantity,
+                        entry_signal=current_pos.get('entry_signal', None),
+                        exit_time=signal.timestamp,
+                        exit_price=execution.average_fill_price,
+                        gross_pnl=realized_pnl + commission,
+                        total_costs=commission,
+                        net_pnl=realized_pnl,
+                        exit_signal=signal,
+                        entry_reason=current_pos.get('entry_signal', signal).reason,
+                        exit_reason=signal.reason,
+                        
+                        # Analytics from Strategy Signal
+                        max_favorable_excursion=signal.indicators.get('highest_price'),
+                        max_adverse_excursion=signal.indicators.get('lowest_price'),
+                        risk_multiple=signal.indicators.get('mfe_r')
+                    )
+
+                    # Publish Trade Closed Event
+                    if self.event_bus:
+                        self.event_bus.publish(Event(
+                            EventType.TRADE_CLOSED,
+                            signal.timestamp,
+                            TradeClosedEventData(trade=trade)
+                        ))
+
                     # VALIDATION: Equity MUST change
                     assert self.current_capital != prev_capital, "CRITICAL: Equity did not change after trade! Check PnL logic."                    
                     # Close Position
