@@ -1,33 +1,50 @@
 # Feature Engine Configuration
 
 # List of indicators to calculate
-# Supported indicators: sma, ema, rsi, macd, bbands, stoch, adx, atr, roc, cci, obv, supertrend
+# Supported indicators: sma, ema, rsi, macd, bbands, stoch, adx, atr, roc, cci, obv, supertrend, vwap, vol_sma
 indicators:
-  - name: sma
-    params:
-      length: 20
-  - name: sma
-    params:
-      length: 50
+  # 1. RSI (for > 60 check)
   - name: rsi
     params:
       length: 14
+
+  # 2. MACD (Line > Signal, > 0)
   - name: macd
     params:
       fast: 12
       slow: 26
       signal: 9
+
+  # 3. ROC (Positive & Expanding)
+  - name: roc
+    params:
+      length: 10
+
+  # 4. ATR (Expansion)
+  - name: atr
+    params:
+      length: 14
+
+  # 5. Bollinger Bands (Expansion)
   - name: bbands
     params:
       length: 20
       std: 2.0
-  - name: atr
+
+  # 6. Volume Indicators (Spike & OBV)
+  - name: obv
+    params: {}
+  
+  - name: vol_sma
     params:
-      length: 14
+      length: 20
+
+  # 7. VWAP (Intraday Divergence)
+  - name: vwap
+    params: {}
 
 # Timeframes to calculate (in addition to the base timeframe)
 # Examples: "1h", "4h", "1d"
 # Note: Base timeframe is determined by the input data
 timeframes:
-  - "1h"
-  - "4h"
+  - "1m"
