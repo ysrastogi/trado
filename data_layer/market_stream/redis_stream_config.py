@@ -17,6 +17,7 @@ class RedisStreamConfig:
     
     # Stream naming
     stream_prefix: str = "market:ticks:"  # e.g., market:ticks:R_10
+    ohlc_stream_prefix: str = "market:ohlc:" # e.g., market:ohlc:R_10
     consumer_group_prefix: str = "algo:"  # e.g., algo:momentum_trader
     
     # Stream configuration
@@ -45,6 +46,10 @@ class RedisStreamConfig:
     def get_stream_key(self, symbol: str) -> str:
         """Get the stream key for a symbol"""
         return f"{self.stream_prefix}{symbol}"
+
+    def get_ohlc_stream_key(self, symbol: str) -> str:
+        """Get the OHLC stream key for a symbol"""
+        return f"{self.ohlc_stream_prefix}{symbol}"
     
     def get_consumer_group(self, algo_name: str) -> str:
         """Get the consumer group name for an algorithm"""
