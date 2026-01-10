@@ -14,7 +14,7 @@ from datetime import datetime
 from contextlib import contextmanager
 
 from data_layer.market_stream.redis_stream_config import redis_stream_config, RedisStreamConfig
-from data_layer.market_stream.models import TickData
+from data_layer.market_stream.models import TickData, OHLCData
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +95,30 @@ class RedisStreamPublisher:
         
         # Convert to bytes for Redis
         return {k: v.encode('utf-8') for k, v in tick_dict.items()}
+
+    def _serialize_ohlc(self, ohlc: OHLCData) -> Dict[str, bytes]:
+        """
+        Serialize OHLC data for Redis Stream
+        
+        Args:
+            ohlc: OHLCData object to serialize
+            
+        Returns:
+            Dictionary with string keys and bytes values for Redis
+        """
+        # Convert OHLCData to dictionary
+        ohlc_dict = {
+            'symbol': str(ohlc.symbol),
+            'open': str(ohlc.open),
+            'high': str(ohlc.high),
+            'low': str(ohlc.low),
+            'close': str(ohlc.close),
+            'timestamp': str(ohlc.timestamp),
+            'epoch': str(ohlc.epoch)
+        }
+        
+        # Convert to bytes for Redis
+        return {k: v.encode('utf-8') for k, v in ohlc_dict.items()}
     
     def publish_tick(self, tick: TickData, retry: bool = True) -> bool:
         """
@@ -153,6 +177,68 @@ class RedisStreamPublisher:
                     
             except Exception as e:
                 self.logger.error(f"Error publishing tick for {tick.symbol}: {e}")
+                self._stats['failed_publishes'] += 1
+                return False
+        
+        return False
+
+    def publish_ohlc(self, ohlc: OHLCData, retry: bool = True) -> bool:
+        """
+        Publish OHLC data to the appropriate Redis Stream
+        
+        Args:
+            ohlc: OHLCData object to publish
+            retry: Whether to retry on failure
+            
+        Returns:
+            True if published successfully, False otherwise
+        """
+        if not self._redis:
+            self.logger.error("Redis connection not established")
+            return False
+        
+        stream_key = self.config.get_ohlc_stream_key(ohlc.symbol)
+        
+        for attempt in range(self.config.max_retries if retry else 1):
+            try:
+                # Serialize OHLC data
+                data = self._serialize_ohlc(ohlc)
+                
+                # Add metadata
+                data[b'published_at'] = str(time.time()).encode('utf-8')
+                
+                # Publish to stream with MAXLEN trimming
+                message_id = self._redis.xadd(
+                    stream_key,
+                    data,
+                    maxlen=self.config.max_stream_length,
+                    approximate=self.config.approximate_trim
+                )
+                
+                # Update statistics
+                self._stats['messages_published'] += 1
+                self._stats['symbols'].add(ohlc.symbol)
+                self._stats['last_publish_time'] = datetime.now()
+                
+                # Update metrics if enabled
+                if self.config.enable_metrics:
+                    self._update_metrics(stream_key, ohlc.symbol)
+                
+                self.logger.debug(f"Published OHLC for {ohlc.symbol} to stream {stream_key}, ID: {message_id}")
+                return True
+                
+            except redis.ConnectionError as e:
+                self.logger.warning(f"Connection error publishing OHLC (attempt {attempt + 1}): {e}")
+                if attempt < self.config.max_retries - 1:
+                    time.sleep(self.config.retry_delay_seconds)
+                    self._connect()  # Reconnect
+                else:
+                    self._stats['failed_publishes'] += 1
+                    self.logger.error(f"Failed to publish OHLC after {self.config.max_retries} attempts")
+                    return False
+                    
+            except Exception as e:
+                self.logger.error(f"Error publishing OHLC for {ohlc.symbol}: {e}")
                 self._stats['failed_publishes'] += 1
                 return False
         
