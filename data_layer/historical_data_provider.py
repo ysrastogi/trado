@@ -3,10 +3,7 @@ Historical data provider using yfinance
 """
 
 import logging
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
+import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
