@@ -103,7 +103,6 @@ class IMarketStream(ABC):
         pass
 
 class IMarketDataSource(ABC):
-    """Interface for Data Producers (Deriv, Dhan)"""
     @abstractmethod
     def connect(self) -> bool:
         pass
