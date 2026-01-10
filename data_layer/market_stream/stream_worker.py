@@ -12,7 +12,7 @@ import signal
 from typing import Dict, Any, Optional, Callable, List
 from datetime import datetime
 
-from data_layer.market_stream.stream import MarketStream
+from data_layer.market_stream.factory import MarketStreamFactory
 from data_layer.worker_manager import WorkerManager
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ class StreamWorker:
 
         # Worker state
         self._running = False
-        self._stream: Optional[MarketStream] = None
+        self._stream = None  # Type: IMarketDataSource
         self._monitor_thread: Optional[threading.Thread] = None
         self._reconnect_thread: Optional[threading.Thread] = None
         self._shutdown_event = threading.Event()
@@ -88,8 +88,8 @@ class StreamWorker:
         logger.info(f"Starting StreamWorker '{self.name}'...")
 
         try:
-            # Initialize MarketStream
-            self._stream = MarketStream(
+            # Initialize MarketStream (Data Source)
+            self._stream = MarketStreamFactory.create_data_source(
                 config_path=self.config_path,
                 auth_token=self.auth_token,
                 enable_redis_stream=self.enable_redis_stream
@@ -309,6 +309,6 @@ class StreamWorker:
         return self._running
 
     @property
-    def stream(self) -> Optional[MarketStream]:
+    def stream(self):
         """Get the underlying MarketStream instance"""
         return self._stream
