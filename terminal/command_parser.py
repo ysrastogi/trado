@@ -33,6 +33,7 @@ class CommandType(Enum):
     RISK = "risk"
     LIVE_CHART = "live_chart"
     REPLAY = "replay"
+    BACKTEST = "backtest"
     UNKNOWN = "unknown"
 
 
@@ -54,7 +55,7 @@ class CommandParser:
             '/strategy': CommandType.STRATEGY,
             '/risk': CommandType.RISK,
             '/replay': CommandType.REPLAY,
-            '/backtest': CommandType.REPLAY,
+            '/backtest': CommandType.BACKTEST,
         }
     
     def parse(self, user_input: str) -> Tuple[CommandType, Dict[str, Any]]:
