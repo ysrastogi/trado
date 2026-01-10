@@ -56,8 +56,11 @@ class MomentumStrategy(BaseStrategy):
         self.entry_price = 0.0
         self.stop_loss = 0.0
         self.highest_price = 0.0
+        self.lowest_price = 0.0  # MAE tracking
         self.atr_at_entry = 0.0
         self.trailing_active = False
+
+        self.last_ignition_time = None # Time tracking
         
         # Exit state tracking
         self.breakeven_hit = False  # Track if +1R was reached
@@ -263,12 +266,20 @@ class MomentumStrategy(BaseStrategy):
         self.execution_risk = calculated_risk  # Store real risk
         
         self.highest_price = candle.close
+        self.lowest_price = candle.close # Init Low
         self.high_since_entry = candle.close
         self.candles_since_high = 0
         self.breakeven_hit = False
         self.entry_hour = candle.timestamp.hour
         
         self.stop_loss = stop_loss_level
+
+        # Tracking Time between ignitions
+        time_since_last = None
+        if entry_type == "IGNITION":
+             if self.last_ignition_time:
+                 time_since_last = (candle.timestamp - self.last_ignition_time).total_seconds()
+             self.last_ignition_time = candle.timestamp
         
         logger.info(f"{entry_type} ENTRY: {candle.symbol} @ {candle.close}, SL: {self.stop_loss:.4f} (Risk: {self.execution_risk:.4f})")
         self.bars_in_trade = 0
@@ -284,7 +295,9 @@ class MomentumStrategy(BaseStrategy):
                 'price': candle.close,
                 'stop_loss': self.stop_loss,
                 'atr': atr,
-                'ema_9': ema_9
+                'ema_9': ema_9,
+                'time_since_last_ignition_seconds': time_since_last,
+                'risk_per_share': self.execution_risk
             }
         )
 
@@ -300,13 +313,20 @@ class MomentumStrategy(BaseStrategy):
         self.bars_in_trade += 1
         atr = features.get(f'ATRr_{self.atr_period}', self.atr_at_entry)
         
-        # Update highest price and close tracking
+        # Update highest/lowest price
         self.highest_price = max(self.highest_price, candle.high)
+        self.lowest_price = min(self.lowest_price, candle.low)
         self.high_since_entry = max(self.high_since_entry, candle.close)
         
         # Calculate R multiple based on REAL RISK (Entry - Initial SL)
         safe_risk = self.execution_risk if hasattr(self, 'execution_risk') and self.execution_risk > 0 else max(self.atr_at_entry, 1.0)
         r_multiple = (self.highest_price - self.entry_price) / safe_risk
+        
+        # Calculate Exit Metrics for Analytics
+        mae_price = self.entry_price - self.lowest_price
+        mfe_price = self.highest_price - self.entry_price
+        mae_r = mae_price / safe_risk
+        mfe_r = mfe_price / safe_risk
         
         # EMA 9 for BE Check
         ema_9 = self._calculate_ema('Close', 9)
@@ -344,7 +364,15 @@ class MomentumStrategy(BaseStrategy):
                 algorithm="MomentumStrategy",
                 signal_type="SELL",
                 confidence=1.0,
-                reason=f"Stop Loss Hit at {r_multiple:.2f}R"
+                reason=f"Stop Loss Hit at {r_multiple:.2f}R",
+                indicators={
+                    'price': self.stop_loss, # Exit Price
+                    'mae_r': mae_r,
+                    'mfe_r': mfe_r,
+                    'highest_price': self.highest_price,
+                    'lowest_price': self.lowest_price,
+                    'risk_per_share': safe_risk
+                }
             )
         
         # ===== FIX #3: Momentum Decay Exit =====
@@ -421,7 +449,15 @@ class MomentumStrategy(BaseStrategy):
                 algorithm="MomentumStrategy",
                 signal_type="SELL",
                 confidence=1.0,
-                reason="End of Day Exit"
+                reason="End of Day Exit",
+                indicators={
+                    'price': candle.close,
+                    'mae_r': mae_r,
+                    'mfe_r': mfe_r,
+                    'highest_price': self.highest_price,
+                    'lowest_price': self.lowest_price,
+                    'risk_per_share': safe_risk
+                }
             )
         
         return None
