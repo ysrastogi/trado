@@ -12,13 +12,21 @@ class SMAIndicator(PriceBasedIndicator):
     def __init__(self, params: dict = None):
         super().__init__("sma", params)
         self.length = self.params.get('length', 20)
+        self.input_column = self.params.get('input_column', 'close')
 
-    def _calculate_from_close(self, close: pd.Series) -> pd.Series:
-        """Calculate SMA from close prices"""
-        return close.rolling(window=self.length).mean()
+    def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate SMA"""
+        if self.input_column not in df.columns:
+            raise ValueError(f"Input column '{self.input_column}' not found in DataFrame")
+            
+        series = df[self.input_column]
+        result = series.rolling(window=self.length).mean()
+        result.name = self.get_output_columns()[0]
+        return result.to_frame()
 
     def get_output_columns(self) -> list:
-        return [f"SMA_{self.length}"]
+        suffix = f"_{self.input_column}" if self.input_column != 'close' else ""
+        return [f"SMA_{self.length}{suffix}"]
 
     def validate_params(self) -> bool:
         return 'length' in self.params and self.params['length'] > 0
