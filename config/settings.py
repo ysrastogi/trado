@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     ws_host: str = os.environ.get("WS_HOST", "")
     ws_port: int = int(os.environ.get("WS_PORT", 8765))
     redis_url: str = os.environ.get("REDIS_URL", "redis://localhost:6378/0")
+    dhan_client_id: str = os.environ.get("DHAN_CLIENT_ID", "")
+    dhan_access_token: str = os.environ.get("DHAN_ACCESS_TOKEN", "")
+    dhan_api_url: str = os.environ.get("DHAN_API_URL", "https://api.dhan.co/v2")
 
     class Config:
         env_file = ".env"
