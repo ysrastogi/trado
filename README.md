@@ -2,6 +2,8 @@
 
 **Trado** is a sophisticated, modular algorithmic trading engine built for the **Deriv API**. It features a professional interactive terminal, a robust strategy execution engine, and a flexible backtesting framework. Designed for developers and quants, Trado emphasizes modularity, type safety, and extensibility.
 
+<img width="6378" height="3218" alt="image" src="https://github.com/user-attachments/assets/04b1faa9-dc0d-4e88-a756-a18ac4481a49" />
+
 ## 🚀 Key Features
 
 - **Interactive Terminal**: A rich CLI interface for manual trading, system monitoring, and real-time control.
