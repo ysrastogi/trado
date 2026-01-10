@@ -65,21 +65,41 @@ class ExecutionSimulator:
         order_id = f"ORD-{start_time.strftime('%Y%m%d%H%M%S%f')}-{random.randint(1000, 9999)}"
         
         # Get market conditions
+        # Priority: 
+        # 1. Provided explicit current_price (Passed from engine)
+        # 2. Market State (Updated via on_candle/on_tick)
+        # 3. Fallback (Dangerous 100.0)
+        
+        market_price = None
+        market = None
+        
         if symbol in self.market_state:
             market = self.market_state[symbol]
-            current_price = market.current_price
-            average_daily_volume = market.average_daily_volume
-            volatility = market.volatility
-            bid_price = market.bid_price
-            ask_price = market.ask_price
+            market_price = market.current_price
+            
+        # If current_price passed explicitly, use it. Otherwise use market state.
+        effective_price = current_price if current_price else market_price
+        
+        # If we have a market state, we prefer its metadata (vol/volatility) even if we override price
+        if market:
+            average_daily_volume = average_daily_volume or market.average_daily_volume
+            volatility = volatility or market.volatility
+            # Recalculate bid/ask around the EFFECTIVE price
+            # Assuming spread is relative to the price we are using
+            spread = (market.ask_price - market.bid_price) if (market.ask_price and market.bid_price) else 0.0
+            half_spread = spread / 2 if spread > 0 else (effective_price * 0.0005) # 5bps fallback
+            bid_price = effective_price - half_spread
+            ask_price = effective_price + half_spread
         else:
-            # Use provided values or defaults
-            current_price = current_price or 100.0
+            # Fallback path
+            effective_price = effective_price or 100.0
             average_daily_volume = average_daily_volume or 1000000
-            volatility = volatility or 0.20  # 20% annualized
-            spread_bps = 10.0  # Default 10 bps spread
-            bid_price = current_price * (1 - spread_bps / 20000)
-            ask_price = current_price * (1 + spread_bps / 20000)
+            volatility = volatility or 0.20
+            spread_bps = 10.0
+            bid_price = effective_price * (1 - spread_bps / 20000)
+            ask_price = effective_price * (1 + spread_bps / 20000)
+            
+        current_price = effective_price # Normalize variable name for rest of function
         
         # Validate order
         rejection_reason = self._validate_order(
