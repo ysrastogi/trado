@@ -1,18 +1,22 @@
 websocket:
+  provider: "deriv" # Options: "deriv", "dhan"
   url: "wss://ws.derivws.com/websockets/v3"
   app_id: "106101"
   reconnect_attempts: 5
   reconnect_delay: 5
   heartbeat_interval: 30
 
+# dhan:
+#   url: "wss://api-feed.dhan.co"
+#   version: "2"
+#   auth_type: "2"
+
 market_data:
   symbols:
-    - "R_10"  # Volatility 10 Index
-    - "R_25"  # Volatility 25 Index
-    - "R_50"  # Volatility 50 Index
-    - "R_75"  # Volatility 75 Index
-    - "R_100" # Volatility 100 Index
-    - "cryBTCUSD" # Bitcoin/USD
+    - "BOOM1000"  # Volatility 10 Index
+    # - "MA"  # Volatility 50 Index
+    # - "IBM"  # Volatility 75 Index
+    # - "NKE" # Volatility 100 Index
   
   stream_types:
     - "tick"
@@ -28,6 +32,8 @@ market_data:
     - "1d"
 
 trading:
+  execution_mode: "paper"
+  paper_balance: 1000000.0
   default_stake: 10
   max_stake: 1000
   risk_management:
