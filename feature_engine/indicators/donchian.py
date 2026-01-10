@@ -15,7 +15,10 @@ class DonchianChannelsIndicator(BaseIndicator):
 
     def __init__(self, params: dict = None):
         super().__init__("donchian", params)
-        self.length = self.params.get('length', 20)
+        # Handle common parameter aliasing for length
+        self.length = self.params.get('length', 
+                      self.params.get('period', 
+                      self.params.get('window', 20)))
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -50,4 +53,6 @@ class DonchianChannelsIndicator(BaseIndicator):
         ]
 
     def validate_params(self) -> bool:
-        return 'length' in self.params and self.params['length'] > 0
+        # Check if length or any of its aliases are present
+        has_length = ('length' in self.params) or ('period' in self.params) or ('window' in self.params)
+        return has_length and self.length > 0
