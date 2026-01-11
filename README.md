@@ -26,8 +26,8 @@ Key architectural highlights include:
 - [Strategy Engine Guide](docs/STRATEGY_GUIDE.md): How to build strategies, use indicators, and integrate analytics.
 - [Feature Engine Guide](docs/FEATURE_ENGINE_GUIDE.md): Architecture of indicators, creating new ones, and multi-timeframe logic.
 - [Backtesting Guide](docs/BACKTESTING_GUIDE.md): Configuration, running simulations, and using different data sources.
-- [Paper Trading Guide](PAPER_TRADING_IMPLEMENTATION.md): Details on the paper trading system.
-- [Quick Reference](QUICK_REFERENCE.md): Cheat sheet for common tasks.
+- [Paper Trading Guide](docs/PAPER_TRADING_IMPLEMENTATION.md): Details on the paper trading system.
+- [Quick Reference](docs/QUICK_REFERENCE.md): Cheat sheet for common tasks.
 
 ## 📂 Project Structure
 
