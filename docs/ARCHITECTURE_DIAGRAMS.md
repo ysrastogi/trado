@@ -1,48 +1,180 @@
-# Detailed Trades Report - Architecture Diagrams
+# Trado System Architecture
 
-## System Architecture
+This document details the architecture of the Trado trading system, covering the high-level design, module interactions, and component-level structures.
 
+## 1. High-Level System Architecture
+
+The Trado system is designed as a modular platform supporting both **Live Trading** and **Backtesting** through a shared core of Strategy and Feature logic.
+
+```mermaid
+graph TD
+    %% Actors & Entry Points
+    User([User / Algo Trader]) --> Terminal[Terminal / CLI / Scripts]
+    Terminal -->|Launch| Engines
+    
+    subgraph Engines [Execution Engines]
+        LTE[LiveTradingEngine]
+        BTE[BacktestEngine]
+    end
+
+    %% Shared Core Logic
+    subgraph Core [Core Logic]
+        SE[Strategy Engine]
+        FE[Feature Engine]
+        reg[Indicator Registry]
+        FE -->|Lookup| reg
+        SE -->|Request Features| FE
+    end
+    
+    %% Relationships
+    LTE -->|Orchestrate| SE
+    BTE -->|Orchestrate| SE
+
+    %% Infrastructure
+    subgraph Infra [Infrastructure & Adapters]
+        MS[Market Stream<br/>Wocket/Redis]
+        Broker[Broker Adapter<br/>ExecutionService]
+        Hist[Historical Data<br/>File/API]
+    end
+
+    %% Flow
+    MS -->|Live Data| LTE
+    Hist -->|Past Data| BTE
+    LTE -->|Submit Orders| Broker
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        BACKTESTING WORKFLOW                          │
-└─────────────────────────────────────────────────────────────────────┘
 
-    ┌──────────────────────┐
-    │   PlaybackEngine     │  ← Historical candle data
-    │   (Data Source)      │
-    └──────────┬───────────┘
-               │
-               ▼
-    ┌──────────────────────────┐
-    │   BacktestEngine         │  ◄── Enhanced with TradeTracker
-    │  ┌────────────────────┐  │
-    │  │  Strategy Execution  │  │
-    │  └────────────────────┘  │
-    │  ┌────────────────────┐  │
-    │  │  ExecutionSimulator  │ │
-    │  └────────────────────┘  │
-    │  ┌────────────────────┐  │
-    │  │  TradeTracker      │ │  ◄── NEW: Tracks all trades
-    │  └────────────────────┘  │
-    └──────────┬───────────────┘
-               │
-               ▼
-    ┌──────────────────────────┐
-    │   BacktestReporter       │  ◄── NEW: Detailed reporting
-    │  ┌────────────────────┐  │
-    │  │ Markdown Report    │  │
-    │  │ CSV Export         │  │
-    │  │ JSON Export        │  │
-    │  └────────────────────┘  │
-    └──────────────────────────┘
-               │
-               ▼
-    ┌──────────────────────────────────┐
-    │    Output Reports                │
-    │  • detailed_trades_report.md     │
-    │  • trades_data.csv               │
-    │  • trades_data.json              │
-    └──────────────────────────────────┘
+## 2. Live Trading Data Flow
+
+In Live/Paper trading mode, data flows asynchronously from the exchange via WebSocket, processed by the Feature Engine, and acted upon by the Strategy.
+
+```mermaid
+sequenceDiagram
+    participant Ex as Exchange (Deriv/Dhan)
+    participant MS as MarketStream
+    participant LTE as LiveTradingEngine
+    participant FE as FeatureEngine
+    participant SE as Strategy
+    participant ES as ExecutionService
+
+    %% Connection
+    LTE->>MS: Subscribe(Symbol, Timeframe)
+    MS->>Ex: WebSocket Connect
+    
+    loop Every Tick/Candle
+        Ex->>MS: Market Data Update
+        MS->>LTE: Callback(_on_candle_update)
+        
+        activate LTE
+        LTE->>LTE: Update Candle Buffer
+        
+        LTE->>FE: calculate_indicators(candles)
+        FE-->>LTE: Features (DataFrame)
+        
+        LTE->>SE: on_candle(candle, features)
+        activate SE
+        SE->>SE: Check Signals
+        SE-->>LTE: SignalEvent (BUY/SELL)
+        deactivate SE
+        
+        alt Signal Generated
+            LTE->>ES: execute_order(signal)
+            activate ES
+            ES->>Ex: Place Order API
+            Ex-->>ES: Order Confirmation
+            ES-->>LTE: OrderExecution
+            deactivate ES
+        end
+        deactivate LTE
+    end
+```
+
+## 3. Component Architecture
+
+### Feature & Strategy Engine
+The core logic relies on a Registry pattern for Indicators to ensure extensibility.
+
+```mermaid
+classDiagram
+    class IndicatorRegistry {
+        +register(name, class)
+        +get(name)
+    }
+    
+    class BaseIndicator {
+        <<Abstract>>
+        +calculate(data)
+        +validate_config()
+    }
+    
+    class IndicatorCalculator {
+        +calculate_features(data, config)
+    }
+    
+    class BaseStrategy {
+        <<Abstract>>
+        +on_tick(tick)
+        +on_candle(candle, features)
+        +on_bar(bar)
+    }
+    
+    class MomentumStrategy {
+        +on_candle()
+    }
+    
+    IndicatorRegistry o-- BaseIndicator
+    IndicatorCalculator --> IndicatorRegistry 
+    BaseStrategy <|-- MomentumStrategy
+    BaseStrategy --> IndicatorCalculator : uses
+    
+    BaseIndicator <|-- RCA
+    BaseIndicator <|-- SuperTrend
+```
+
+---
+
+## 3. Backtesting & Reporting Subsystem
+
+This subsystem handles historical simulation, trade tracking, and detailed performance reporting.
+
+```mermaid
+graph TD
+    %% Data Sources
+    subgraph Data [Data Sources]
+        PE[PlaybackEngine]
+        Hist[Historical Data]
+        Hist -->|Load| PE
+    end
+
+    %% Execution Core
+    subgraph Engine [Backtest Engine Core]
+        BTE[BacktestEngine]
+        SE[Strategy]
+        Sim[ExecutionSimulator]
+        TT[TradeTracker]
+        
+        PE -->|Candle Data| BTE
+        BTE -->|Tick/Candle| SE
+        SE -->|Signal| BTE
+        BTE -->|Order| Sim
+        Sim -->|Execution Fill| BTE
+        
+        BTE -->|Updates| TT
+        SE -.->|Signal Meta| TT
+        Sim -.->|Execution Meta| TT
+    end
+    
+    %% Reporting
+    subgraph Reports [Reporting Layer]
+        Rep[BacktestReporter]
+        MD[Markdown Detailed Report]
+        CSV[CSV Export]
+        JSON[JSON Data]
+        
+        TT -->|Trade Records| Rep
+        Rep -->|Generate| MD
+        Rep -->|Export| CSV
+        Rep -->|Export| JSON
+    end
 ```
 
 ---
@@ -224,74 +356,52 @@
 
 ## TradeTracker State Machine
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                                                                │
-│                    TradeTracker States                         │
-│                                                                │
-│  ┌────────────────────────────┐                               │
-│  │     WAITING FOR SIGNAL      │                               │
-│  │   (No open trades)          │                               │
-│  │                             │                               │
-│  │   get_open_trades() = []    │                               │
-│  └────────────┬────────────────┘                               │
-│               │ on_entry_signal()                              │
-│               │ ↓                                               │
-│  ┌────────────────────────────┐                               │
-│  │   ENTRY SIGNAL RECEIVED    │                               │
-│  │                             │                               │
-│  │ • TradeRecord created       │                               │
-│  │ • trade_id assigned         │                               │
-│  │ • open_trades[id] created   │                               │
-│  │ • intra_metrics[id] created │                               │
-│  └────────────┬────────────────┘                               │
-│               │ on_entry_execution()                           │
-│               │ ↓                                               │
-│  ┌──────────────────────────────────────┐                     │
-│  │   POSITION OPEN / MONITORING         │                     │
-│  │                                      │                     │
-│  │ • entry_execution populated          │                     │
-│  │ • entry_price set                    │                     │
-│  │ • on_price_update() called each      │                     │
-│  │   candle (MAE/MFE tracking)          │                     │
-│  │                                      │                     │
-│  │ get_open_trades() = [trade]         │                     │
-│  │ get_all_trades() = []               │                     │
-│  └────────────┬───────────────────────┘                       │
-│               │ on_exit_signal()                               │
-│               │ ↓                                               │
-│  ┌────────────────────────────┐                               │
-│  │   EXIT SIGNAL RECEIVED      │                               │
-│  │                             │                               │
-│  │ • exit_signal populated     │                               │
-│  │ • exit_reason_text set      │                               │
-│  │ • Still in open_trades      │                               │
-│  └────────────┬────────────────┘                               │
-│               │ on_exit_execution()                            │
-│               │ ↓                                               │
-│  ┌────────────────────────────────────┐                       │
-│  │   TRADE CLOSED / FINALIZED         │                       │
-│  │                                    │                       │
-│  │ • exit_execution populated         │                       │
-│  │ • P&L calculated (gross/net)       │                       │
-│  │ • MAE/MFE finalized                │                       │
-│  │ • Duration calculated              │                       │
-│  │ • Moved to closed_trades           │                       │
-│  │ • Removed from open_trades         │                       │
-│  │                                    │                       │
-│  │ get_open_trades() = []            │                       │
-│  │ get_all_trades() = [trade]        │                       │
-│  └────────────┬───────────────────────┘                       │
-│               │                                                │
-│               │ (Trade analysis, reports, export)             │
-│               │                                                │
-│               ▼                                                │
-│  ┌────────────────────────────┐                               │
-│  │     AWAITING NEXT SIGNAL    │                               │
-│  │   (Can start new trade)     │                               │
-│  └────────────────────────────┘                               │
-│                                                               │
-└────────────────────────────────────────────────────────────────┘
+This state machine manages the lifecycle of a single trade within the `TradeTracker`.
+
+```mermaid
+stateDiagram-v2
+    direction TB
+    
+    [*] --> Waiting : Start
+    note right of Waiting
+        get_open_trades() = []
+    end note
+
+    Waiting --> EntrySignalReceived : on_entry_signal()
+    EntrySignalReceived --> Monitoring : on_entry_execution()
+    
+    state Monitoring {
+        [*] --> CheckPrice
+        CheckPrice --> UpdateMetrics : on_price_update()
+        UpdateMetrics --> CheckPrice
+        note right of UpdateMetrics
+            Updates MAE/MFE
+            Tracks Max/Min Price
+        end note
+    }
+    
+    Monitoring --> ExitSignalReceived : on_exit_signal()
+    
+    state ExitSignalReceived {
+        [*] --> PendingExit
+        note right of PendingExit
+            Exit Reason Set
+            Still Open
+        end note
+    }
+
+    ExitSignalReceived --> Closed : on_exit_execution()
+    
+    state Closed {
+        [*] --> Finalized
+        note right of Finalized
+            P&L Calculated
+            Moved to Closed Trades
+        end note
+    }
+
+    Closed --> Waiting : Ready for Next Trade
+    Closed --> [*] : End of Backtest
 ```
 
 ---
