@@ -1,6 +1,77 @@
-# Quick Reference: Detailed Trades Report API
+# Trado Developer Quick Reference
 
-## Core Classes
+## 1. CLI & Execution
+
+### Interactive Terminal
+Launch the main interactive shell for manual trading and system control:
+```bash
+python main.py
+```
+Type `/help` in the terminal for available commands.
+
+### Backtesting & Analysis
+Scripts are located in the root directory. Configure parameters (symbol, dates) directly in the script files.
+- **Momentum Strategy**: `python run_backtest_momentum.py`
+- **Optimization**: `python run_optimization.py`
+- **Paper Trading**: `python run_paper_momentum.py`
+
+## 2. Configuration
+
+### Environment Variables (.env)
+Managed via `pydantic-settings` in `config/settings.py`.
+- `DERIV_AUTH_TOKEN`: Critical for broker connection.
+- `REDIS_URL`: For market data streaming (default: `redis://localhost:6378/0`).
+- `DHAN_CLIENT_ID` / `DHAN_ACCESS_TOKEN`: Indian market access.
+
+### YAML Config (`config/trading_config.yaml`)
+- `symbols`: List of active symbols (e.g., ["BOOM1000", "AAPL"]).
+- `market_data.candle_intervals`: Timeframes to track (e.g., ["1m", "5m"]).
+- `trading.risk_management`: Global risk limits.
+
+## 3. Strategy Development
+
+Inherit from `strategy_engine.base_strategy.BaseStrategy`.
+
+### Lifecycle Hooks
+- `initialize(self)`: Setup indicators and subscriptions.
+- `on_tick(self, tick)`: High-frequency updates (real-time price).
+- `on_candle(self, candle, features)`: Main logic hook. Computed features available here.
+- `on_order_update(self, order)`: Handle fills and status changes.
+
+### Example
+```python
+def on_candle(self, candle, features):
+    if features['rsi'] < 30:
+        return SignalEvent(signal_type=SignalType.BUY, ...)
+```
+
+## 4. Feature Engine & Indicators
+
+### Indicator Registry
+Trado uses a registry pattern in `feature_engine/indicators/registry.py`.
+
+```python
+from feature_engine.indicators.registry import IndicatorRegistry
+
+# Reuse existing
+rsi = IndicatorRegistry.create_indicator("rsi", {"length": 14})
+
+# Register new (in your indicator file)
+@IndicatorRegistry.register("my_custom_indicator")
+class MyIndicator(BaseIndicator):
+    ...
+```
+
+## 5. Risk Management
+
+Controls in `risk_manager/risk_limits.py`, configured via YAML.
+- `max_loss_per_day`: Hard stop on daily loss.
+- `max_trades_per_day`: Prevent over-trading.
+- `max_position_size`: Capital allocation limit.
+
+Use `risk_manager.check_order(order)` before sending signals.
+
+## 6. Data Models & Reporting API
 
 ### TradeRecord
 ```python
