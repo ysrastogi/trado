@@ -23,7 +23,7 @@ Key architectural highlights include:
 - **Data Layer**: Efficient market data streaming with optional Redis integration for high-throughput setups.
 
 ## � Documentation
-- [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md): High-level design and component interactions.
+- [Architecture Overview](docs/ARCHITECTURE_DIAGRAMS.md): High-level design and component interactions.
 - [Strategy Engine Guide](docs/STRATEGY_GUIDE.md): How to build strategies, use indicators, and integrate analytics.
 - [Feature Engine Guide](docs/FEATURE_ENGINE_GUIDE.md): Architecture of indicators, creating new ones, and multi-timeframe logic.
 - [Backtesting Guide](docs/BACKTESTING_GUIDE.md): Configuration, running simulations, and using different data sources.
